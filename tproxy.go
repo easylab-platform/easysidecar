@@ -250,7 +250,9 @@ func rewriteRelay(c *net.TCPConn, tr *tlsReader, rule *Rule, host string, mitm *
 }
 
 // resetConn aborts with RST instead of a graceful FIN.
-func resetConn(c *net.TCPConn) {
-	_ = c.SetLinger(0)
+func resetConn(c net.Conn) {
+	if tcp, ok := c.(*net.TCPConn); ok {
+		_ = tcp.SetLinger(0)
+	}
 	_ = c.Close()
 }

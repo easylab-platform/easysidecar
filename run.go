@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net"
+	"strings"
 )
 
 // run dispatches on the process role. Init mode installs iptables rules and
@@ -17,7 +18,9 @@ func run(cfg *Config) error {
 	return fmt.Errorf("unhandled mode %q", cfg.Mode)
 }
 
-// runProxy loads rules and serves every listener until one fails.
+// runProxy loads rules and serves every listener until one fails. The spoof
+// flag selects the no-netfilter mode (DNS + direct :443/:80 listeners) in
+// place of the REDIRECT listener.
 func runProxy(cfg *Config) error {
 	rules, err := LoadRules(cfg.RulesFile)
 	if err != nil {
@@ -38,6 +41,10 @@ func runProxy(cfg *Config) error {
 		return fmt.Errorf("rules contain rewrite entries but no -ca-cert/-ca-key: rewrite requires MITM")
 	}
 
+	if cfg.Spoof {
+		return runSpoof(cfg, decisions, mitm, logger)
+	}
+
 	errCh := make(chan error, 3)
 	go func() { errCh <- ServeRedir(cfg.RedirAddr, decisions, mitm, logger) }()
 	go func() {
@@ -50,4 +57,40 @@ func runProxy(cfg *Config) error {
 	}()
 	go func() { errCh <- ServeDNS(cfg.DNSAddr, decisions, logger) }()
 	return <-errCh
+}
+
+// runSpoof serves the dns-spoof mode listeners: the resolver plus the direct
+// TLS/HTTP faces. It composes with an upstream egress proxy (mihomo) for
+// DIRECT traffic.
+func runSpoof(cfg *Config, decisions *Decider, mitm *MITM, logger *ConnLogger) error {
+	upstreams := []string{withPort(cfg.UpstreamDNS, "53")}
+	dns := &SpoofDNS{
+		Addr: cfg.SpoofDNSAddr, SelfIP: cfg.SelfIP,
+		UpstreamDNS: upstreams, Decider: decisions, Logger: logger,
+	}
+	tcp := &SpoofTCP{
+		TLSAddr: cfg.SpoofTLSAddr, HTTPAddr: cfg.SpoofHTTPAddr,
+		Decider: decisions, MITM: mitm, UpstreamProxy: cfg.UpstreamProxy, Logger: logger,
+	}
+	logger.Log(ConnLogEntry{Action: "info", Dst: "spoof mode: self=" + cfg.SelfIP +
+		" dns-upstream=" + strings.Join(upstreams, ",") + " egress-proxy=" + cfg.UpstreamProxy})
+
+	errCh := make(chan error, 2)
+	go func() { errCh <- dns.Serve() }()
+	go func() { errCh <- tcp.Serve() }()
+	return <-errCh
+}
+
+// withPort appends :53 when an upstream resolver is given as a bare IP.
+func withPort(host, port string) string {
+	if host == "" {
+		return "8.8.8.8:53"
+	}
+	if _, _, err := net.SplitHostPort(host); err == nil {
+		return host
+	}
+	if strings.Contains(host, ":") { // bare IPv6
+		return "[" + host + "]:" + port
+	}
+	return host + ":" + port
 }

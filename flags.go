@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"os"
 	"strings"
 )
 
@@ -35,6 +36,27 @@ type Config struct {
 	// InterceptAllTCP extends the init iptables rules from 80/443 to all TCP
 	// (cluster bypass still applies). Default false.
 	InterceptAllTCP bool
+
+	// ---- dns-spoof mode (no netfilter) ----
+	//
+	// Spoof enables the no-kernel-dependency interception mode: the sidecar
+	// answers DNS itself (returning its own Pod IP for rewrite-matched
+	// hostnames, NXDOMAIN for blocked ones, the real answer otherwise) and
+	// listens directly on TCP :443/:80. Workloads get dnsConfig pointing at
+	// the sidecar. Requires no NET_ADMIN, no iptables, no tun.
+	Spoof bool
+	// SelfIP is the address the sidecar answers spoofed names with (the Pod
+	// IP). Defaults from POD_IP, then the first non-loopback IPv4.
+	SelfIP string
+	// UpstreamDNS is the real resolver the sidecar forwards DIRECT queries
+	// to (the cluster CoreDNS service IP). Required in spoof mode.
+	UpstreamDNS string
+	// UpstreamProxy is an optional upstream HTTP proxy (e.g. mihomo) used for
+	// DIRECT egress, so spoof mode composes with an existing cluster egress
+	// proxy instead of dialing from the Pod directly.
+	UpstreamProxy string
+	// Spoof listen addresses (spoof mode).
+	SpoofDNSAddr, SpoofTLSAddr, SpoofHTTPAddr string
 }
 
 func parseFlags() (*Config, error) {
@@ -49,6 +71,13 @@ func parseFlags() (*Config, error) {
 	flag.StringVar(&cfg.ConnectAddr, "connect-addr", "127.0.0.1:7890", "explicit HTTP CONNECT proxy listener")
 	flag.BoolVar(&cfg.MitmDefault, "mitm-default", false, "decrypt all intercepted TLS (not just rewrite rules)")
 	flag.BoolVar(&cfg.InterceptAllTCP, "intercept-all-tcp", false, "init mode: intercept all TCP, not just 80/443")
+	flag.BoolVar(&cfg.Spoof, "spoof", false, "dns-spoof mode: answer DNS + listen on 80/443 directly (no iptables/tun)")
+	flag.StringVar(&cfg.SelfIP, "self-ip", "", "spoof mode: Pod IP to answer spoofed names with (default POD_IP, then first non-loopback IPv4)")
+	flag.StringVar(&cfg.UpstreamDNS, "upstream-dns", "", "spoof mode: real resolver for DIRECT queries (cluster CoreDNS)")
+	flag.StringVar(&cfg.UpstreamProxy, "upstream-proxy", "", "optional upstream HTTP proxy for DIRECT egress (e.g. mihomo)")
+	flag.StringVar(&cfg.SpoofDNSAddr, "spoof-dns-addr", "0.0.0.0:53", "spoof mode: DNS listen address")
+	flag.StringVar(&cfg.SpoofTLSAddr, "spoof-tls-addr", "0.0.0.0:443", "spoof mode: TLS listen address")
+	flag.StringVar(&cfg.SpoofHTTPAddr, "spoof-http-addr", "0.0.0.0:80", "spoof mode: plain-HTTP listen address")
 	flag.Parse()
 
 	for _, c := range strings.Split(*bypass, ",") {
@@ -68,6 +97,21 @@ func parseFlags() (*Config, error) {
 	case ModeProxy:
 		if cfg.RulesFile == "" {
 			return nil, fmt.Errorf("proxy mode requires -rules")
+		}
+		if cfg.Spoof {
+			if cfg.UpstreamDNS == "" {
+				return nil, fmt.Errorf("spoof mode requires -upstream-dns")
+			}
+			if cfg.SelfIP == "" {
+				cfg.SelfIP = os.Getenv("POD_IP")
+			}
+			if cfg.SelfIP == "" {
+				ip, err := firstNonLoopbackIPv4()
+				if err != nil {
+					return nil, fmt.Errorf("spoof mode: cannot determine self IP: %w", err)
+				}
+				cfg.SelfIP = ip
+			}
 		}
 	default:
 		return nil, fmt.Errorf("unknown mode %q (proxy|init)", string(cfg.Mode))
