@@ -6,16 +6,10 @@ import (
 	"strings"
 )
 
-// run dispatches on the process role. Init mode installs iptables rules and
-// exits; proxy mode loads the rule set and serves the listeners.
+// run loads the rule set and serves the listeners (spoof mode is the only
+// interception mechanism).
 func run(cfg *Config) error {
-	switch cfg.Mode {
-	case ModeInit:
-		return runInit(cfg)
-	case ModeProxy:
-		return runProxy(cfg)
-	}
-	return fmt.Errorf("unhandled mode %q", cfg.Mode)
+	return runProxy(cfg)
 }
 
 // runProxy loads rules and serves every listener until one fails. The spoof
@@ -41,22 +35,8 @@ func runProxy(cfg *Config) error {
 		return fmt.Errorf("rules contain rewrite entries but no -ca-cert/-ca-key: rewrite requires MITM")
 	}
 
-	if cfg.Spoof {
-		return runSpoof(cfg, decisions, mitm, logger)
-	}
-
-	errCh := make(chan error, 3)
-	go func() { errCh <- ServeRedir(cfg.RedirAddr, decisions, mitm, logger) }()
-	go func() {
-		ln, err := net.Listen("tcp", cfg.ConnectAddr)
-		if err != nil {
-			errCh <- fmt.Errorf("connect listen %s: %w", cfg.ConnectAddr, err)
-			return
-		}
-		errCh <- ServeConnect(ln, decisions, mitm, logger)
-	}()
-	go func() { errCh <- ServeDNS(cfg.DNSAddr, decisions, logger) }()
-	return <-errCh
+	// Spoof is the only interception mode: DNS-based, no netfilter.
+	return runSpoof(cfg, decisions, mitm, logger)
 }
 
 // runSpoof serves the dns-spoof mode listeners: the resolver plus the direct

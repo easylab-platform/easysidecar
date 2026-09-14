@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"time"
 )
 
@@ -95,13 +96,13 @@ func (s *SpoofTCP) handleTLS(c net.Conn) {
 		e.Action = "rewrite"
 		e.Rule = firstMatch(dec)
 		e.Mitm = true
-		s.rewriteRelay(c, tr, dec.Rule, host, e)
+		s.rewriteRelay(c, tr.replay(), dec.Rule, host, e)
 
 	case ActionDirect:
 		if s.Decider.ShouldDecrypt(dec) && s.MITM != nil {
 			e.Action = "mitm-direct"
 			e.Mitm = true
-			s.mitmRelay(c, host, e)
+			s.mitmRelay(c, tr.replay(), host, e)
 			return
 		}
 		e.Action = "direct"
@@ -111,8 +112,9 @@ func (s *SpoofTCP) handleTLS(c net.Conn) {
 }
 
 // mitmRelay terminates the client TLS and re-originates to the real host
-// (direct) through the upstream proxy when configured.
-func (s *SpoofTCP) mitmRelay(c net.Conn, host string, e ConnLogEntry) {
+// (direct) through the upstream proxy when configured. r replays the
+// classification-read bytes into the TLS server.
+func (s *SpoofTCP) mitmRelay(c net.Conn, r io.Reader, host string, e ConnLogEntry) {
 	tlsCfg, err := s.MITM.TLSConfigFor(host)
 	if err != nil {
 		e.Err = err.Error()
@@ -120,7 +122,7 @@ func (s *SpoofTCP) mitmRelay(c net.Conn, host string, e ConnLogEntry) {
 		_ = c.Close()
 		return
 	}
-	tlsSrv := tls.Server(c, tlsCfg)
+	tlsSrv := tls.Server(bothReader{r, c}, tlsCfg)
 	if err := tlsSrv.Handshake(); err != nil {
 		e.Err = "client handshake: " + err.Error()
 		s.Logger.Log(e)
@@ -145,8 +147,8 @@ func (s *SpoofTCP) mitmRelay(c net.Conn, host string, e ConnLogEntry) {
 
 // rewriteRelay terminates the client TLS and forwards the decrypted stream to
 // the rule target (an easylab pull-through endpoint reached inside the
-// cluster over plain HTTP).
-func (s *SpoofTCP) rewriteRelay(c net.Conn, tr *tlsReader, rule *Rule, host string, e ConnLogEntry) {
+// cluster over plain HTTP). r replays the classification-read bytes.
+func (s *SpoofTCP) rewriteRelay(c net.Conn, r io.Reader, rule *Rule, host string, e ConnLogEntry) {
 	tlsCfg, err := s.MITM.TLSConfigFor(host)
 	if err != nil {
 		e.Err = err.Error()
@@ -154,23 +156,70 @@ func (s *SpoofTCP) rewriteRelay(c net.Conn, tr *tlsReader, rule *Rule, host stri
 		_ = c.Close()
 		return
 	}
-	tlsSrv := tls.Server(c, tlsCfg)
+	tlsSrv := tls.Server(bothReader{r, c}, tlsCfg)
 	if err := tlsSrv.Handshake(); err != nil {
 		e.Err = "client handshake: " + err.Error()
 		s.Logger.Log(e)
 		_ = c.Close()
 		return
 	}
-	up, err := net.DialTimeout("tcp", rule.Target, 10*time.Second)
-	if err != nil {
-		e.Err = err.Error()
-		s.Logger.Log(e)
-		_ = tlsSrv.Close()
-		return
+	scheme, addr := parseTarget(rule.Target)
+	var up net.Conn
+	if scheme == "https" {
+		tlsUp := tls.Client(mustDial(addr, e, s.Logger), &tls.Config{ServerName: hostOf(addr), InsecureSkipVerify: false})
+		if err := tlsUp.Handshake(); err != nil {
+			e.Err = "target handshake: " + err.Error()
+			s.Logger.Log(e)
+			_ = tlsSrv.Close()
+			return
+		}
+		up = tlsUp
+	} else {
+		up = mustDial(addr, e, s.Logger)
 	}
 	defer func() { _ = up.Close() }()
 	_ = relay(tlsSrv, up, s.Logger, e)
 }
+
+// parseTarget splits a rule target into (scheme, "host:port"). Plain is
+// assumed when no scheme is present (in-cluster pull-through endpoints).
+func parseTarget(t string) (string, string) {
+	if rest, ok := strings.CutPrefix(t, "https://"); ok {
+		return "https", rest
+	}
+	return "http", strings.TrimPrefix(t, "http://")
+}
+
+func hostOf(addr string) string {
+	if i := strings.LastIndexByte(addr, ':'); i >= 0 {
+		return strings.Trim(addr[:i], "[]")
+	}
+	return addr
+}
+
+// mustDial is a bounded dial whose failure is logged via the entry.
+func mustDial(addr string, e ConnLogEntry, logger *ConnLogger) net.Conn {
+	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
+	if err != nil {
+		e.Err = err.Error()
+		logger.Log(e)
+		return errConn{err}
+	}
+	return conn
+}
+
+// errConn is a net.Conn whose reads/writes immediately return the stored
+// error, so the relay exits instead of blocking.
+type errConn struct{ err error }
+
+func (c errConn) Read([]byte) (int, error)       { return 0, c.err }
+func (c errConn) Write([]byte) (int, error)      { return 0, c.err }
+func (errConn) Close() error                     { return nil }
+func (errConn) LocalAddr() net.Addr              { return nil }
+func (errConn) RemoteAddr() net.Addr             { return nil }
+func (errConn) SetDeadline(time.Time) error      { return nil }
+func (errConn) SetReadDeadline(time.Time) error  { return nil }
+func (errConn) SetWriteDeadline(time.Time) error { return nil }
 
 // passthrough splices an un-decrypted TLS stream to the real host (or via the
 // upstream proxy when configured).
@@ -270,3 +319,37 @@ func (s *SpoofTCP) handleHTTP(c net.Conn) {
 		_ = relay(c, up, s.Logger, e)
 	}
 }
+
+// serveSpoofTLS is a test/DI seam: run the TLS face on a prepared listener.
+func serveSpoofTLS(ln net.Listener, d *Decider, mitm *MITM, logger *ConnLogger) error {
+	for {
+		c, err := ln.Accept()
+		if err != nil {
+			return err
+		}
+		go handleSpoofTLSConn(c, d, mitm, logger)
+	}
+}
+
+// handleSpoofTLSConn is the test/DI seam for one spoof-TLS connection.
+func handleSpoofTLSConn(c net.Conn, d *Decider, mitm *MITM, logger *ConnLogger) {
+	s := &SpoofTCP{Decider: d, MITM: mitm, Logger: logger}
+	s.handleTLS(c)
+}
+
+// bothReader reads from a buffered source first, then falls through to the
+// live connection — used to hand classification-read bytes to the TLS server
+// before it starts reading the raw stream.
+type bothReader struct {
+	r io.Reader
+	c net.Conn
+}
+
+func (b bothReader) Read(p []byte) (int, error)         { return b.r.Read(p) }
+func (b bothReader) Write(p []byte) (int, error)        { return b.c.Write(p) }
+func (b bothReader) Close() error                       { return b.c.Close() }
+func (b bothReader) LocalAddr() net.Addr                { return b.c.LocalAddr() }
+func (b bothReader) RemoteAddr() net.Addr               { return b.c.RemoteAddr() }
+func (b bothReader) SetDeadline(t time.Time) error      { return b.c.SetDeadline(t) }
+func (b bothReader) SetReadDeadline(t time.Time) error  { return b.c.SetReadDeadline(t) }
+func (b bothReader) SetWriteDeadline(t time.Time) error { return b.c.SetWriteDeadline(t) }

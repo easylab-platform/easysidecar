@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -46,6 +47,20 @@ func (t *tlsReader) Read(p []byte) (int, error) {
 
 // buffered returns the bytes read so far (for replay).
 func (t *tlsReader) buffered() []byte { return t.buf[:t.n] }
+
+// replay wraps the connection so buffered bytes are served before the live
+// stream. Consume it fully; reading past the buffer switches to the raw conn.
+func (t *tlsReader) replay() io.Reader {
+	return struct {
+		io.Reader
+		io.Writer
+	}{io.MultiReader(bytes.NewReader(t.buffered()), t.r), nopWriter{}}
+}
+
+// nopWriter discards writes (MultiReader needs a Writer slot).
+type nopWriter struct{}
+
+func (nopWriter) Write(p []byte) (int, error) { return len(p), nil }
 
 // sni peeks the ClientHello server_name. On success the full handshake
 // remains buffered for replay. ok=false with err==nil means "not TLS / no

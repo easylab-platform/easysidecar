@@ -27,8 +27,6 @@ type Config struct {
 	// registry, loopback). Used by init mode for RETURN rules and by proxy
 	// mode to double-check the original destination.
 	BypassCIDRs []string
-	// Listen addresses (proxy mode).
-	RedirAddr, DNSAddr, ConnectAddr string
 	// MitmDefault, when true, decrypts every intercepted TLS connection that
 	// reaches the decision point (the rewrite rules always decrypt). Default
 	// false: only rewrite rules decrypt.
@@ -66,11 +64,7 @@ func parseFlags() (*Config, error) {
 	flag.StringVar(&cfg.CaCert, "ca-cert", "", "MITM CA certificate PEM (proxy mode)")
 	flag.StringVar(&cfg.CaKey, "ca-key", "", "MITM CA private key PEM (proxy mode)")
 	bypass := flag.String("bypass-cidrs", "", "comma-separated CIDRs to never intercept (cluster ranges)")
-	flag.StringVar(&cfg.RedirAddr, "redir-addr", "127.0.0.1:7893", "transparent REDIRECT listener")
-	flag.StringVar(&cfg.DNSAddr, "dns-addr", "127.0.0.1:7894", "DNS hijack listener (UDP/53 redirected here)")
-	flag.StringVar(&cfg.ConnectAddr, "connect-addr", "127.0.0.1:7890", "explicit HTTP CONNECT proxy listener")
 	flag.BoolVar(&cfg.MitmDefault, "mitm-default", false, "decrypt all intercepted TLS (not just rewrite rules)")
-	flag.BoolVar(&cfg.InterceptAllTCP, "intercept-all-tcp", false, "init mode: intercept all TCP, not just 80/443")
 	flag.BoolVar(&cfg.Spoof, "spoof", false, "dns-spoof mode: answer DNS + listen on 80/443 directly (no iptables/tun)")
 	flag.StringVar(&cfg.SelfIP, "self-ip", "", "spoof mode: Pod IP to answer spoofed names with (default POD_IP, then first non-loopback IPv4)")
 	flag.StringVar(&cfg.UpstreamDNS, "upstream-dns", "", "spoof mode: real resolver for DIRECT queries (cluster CoreDNS)")

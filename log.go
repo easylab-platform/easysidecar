@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"io"
 	"log"
@@ -57,11 +58,12 @@ func relay(down, up net.Conn, l *ConnLogger, e ConnLogEntry) error {
 		done <- err
 	}()
 	err1 := <-done
-	// Close write halves so the peer sees EOF promptly (TLS and TCP conns
-	// both implement CloseWrite via *net.TCPConn underneath; tls.Conn does
-	// not, so use the optional interface).
-	halfClose(down)
-	halfClose(up)
+	// The first finished direction signals the peer. For TLS conns a bare
+	// halfClose is a no-op (no close_notify), so fully Close the TLS side —
+	// that sends close_notify and the client's pending read returns EOF.
+	// Plain TCP conns still get a graceful half-close.
+	closeOne(down)
+	closeOne(up)
 	err2 := <-done
 	if err1 != nil {
 		e.Err = err1.Error()
@@ -84,11 +86,16 @@ func copyOne(dst io.Writer, src io.Reader) (int64, error) {
 	return io.Copy(dst, src)
 }
 
-// halfClose shuts down the write side when the underlying connection
-// supports it (TCP does; tls.Conn passes EOF after CloseWrite of its transport
-// is not exposed, so it is a no-op there).
-func halfClose(c net.Conn) {
+// closeOne finishes a relayed direction: TCP conns get a graceful
+// half-close; TLS conns get a full Close (sends close_notify so the peer's
+// read unblocks — tls.Conn has no exposed half-close).
+func closeOne(c net.Conn) {
+	if _, isTLS := c.(*tls.Conn); isTLS {
+		_ = c.Close()
+		return
+	}
 	if tcp, ok := c.(*net.TCPConn); ok {
 		_ = tcp.CloseWrite()
+		return
 	}
 }

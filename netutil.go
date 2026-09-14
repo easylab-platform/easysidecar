@@ -30,15 +30,6 @@ func inAnyCIDR(ip string, cidrs []string) bool {
 	return false
 }
 
-// hostPort splits "host:port" (or "[v6]:port") into its parts.
-func hostPort(addr string) (string, string, error) {
-	h, p, err := net.SplitHostPort(addr)
-	if err != nil {
-		return "", "", fmt.Errorf("split %q: %w", addr, err)
-	}
-	return h, p, nil
-}
-
 // firstNonLoopbackIPv4 returns the Pod's primary IPv4 address.
 func firstNonLoopbackIPv4() (string, error) {
 	addrs, err := net.InterfaceAddrs()

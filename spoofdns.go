@@ -114,15 +114,26 @@ func (s *SpoofDNS) handle(query []byte) []byte {
 		s.Logger.Log(ConnLogEntry{Host: name, Action: "block-dns", Rule: firstMatch(dec)})
 		return buildNXDOMAIN(query)
 	case ActionRewrite:
-		if qtype == dnsTypeA || qtype == dnsTypeAAAA {
+		if qtype == dnsTypeA {
 			s.Logger.Log(ConnLogEntry{Host: name, Action: "spoof-dns", Rule: firstMatch(dec), Dst: s.SelfIP})
-			return buildARecord(query, s.SelfIP, qtype)
+			return buildARecord(query, s.SelfIP, dnsTypeA)
+		}
+		if qtype == dnsTypeAAAA || qtype == dnsTypeHTTPS || qtype == dnsTypeSVCB {
+			// NODATA: no IPv6 answer (self-ip is IPv4) and no HTTPS/SVCB
+			// record, which cuts the client's QUIC/HTTP3 discovery path —
+			// spoof mode has no UDP listener to catch h3.
+			s.Logger.Log(ConnLogEntry{Host: name, Action: "spoof-nodata", Rule: firstMatch(dec)})
+			return buildNODATA(query)
 		}
 		return s.forward(query)
 	case ActionDirect:
-		if s.Decider.ShouldDecrypt(dec) && (qtype == dnsTypeA || qtype == dnsTypeAAAA) {
-			// mitm_default: route direct TLS through the sidecar too.
-			return buildARecord(query, s.SelfIP, qtype)
+		if s.Decider.ShouldDecrypt(dec) {
+			if qtype == dnsTypeA {
+				return buildARecord(query, s.SelfIP, dnsTypeA)
+			}
+			if qtype == dnsTypeAAAA || qtype == dnsTypeHTTPS || qtype == dnsTypeSVCB {
+				return buildNODATA(query)
+			}
 		}
 		return s.forward(query)
 	}
@@ -154,8 +165,10 @@ func (s *SpoofDNS) forward(query []byte) []byte {
 
 // DNS constants + generic record encoding.
 const (
-	dnsTypeA    = 1
-	dnsTypeAAAA = 28
+	dnsTypeA     = 1
+	dnsTypeAAAA  = 28
+	dnsTypeSVCB  = 64
+	dnsTypeHTTPS = 65
 )
 
 // parseDNSQuestion returns the QNAME and QTYPE of the first question.
@@ -230,23 +243,14 @@ func buildARecord(query []byte, ip string, qtype uint16) []byte {
 	if parsed == nil {
 		return buildNXDOMAIN(query)
 	}
-	var rdata []byte
-	switch qtype {
-	case dnsTypeA:
-		v4 := parsed.To4()
-		if v4 == nil {
-			return buildNXDOMAIN(query)
-		}
-		rdata = v4
-	case dnsTypeAAAA:
-		v6 := parsed.To16()
-		if v6 == nil {
-			return buildNXDOMAIN(query)
-		}
-		rdata = v6
-	default:
+	if qtype != dnsTypeA {
 		return buildNXDOMAIN(query)
 	}
+	v4 := parsed.To4()
+	if v4 == nil {
+		return buildNXDOMAIN(query)
+	}
+	rdata := v4
 
 	resp := make([]byte, 0, qe+16+len(rdata))
 	resp = append(resp, query[:qe]...)
@@ -271,6 +275,22 @@ func buildARecord(query []byte, ip string, qtype uint16) []byte {
 	binary.BigEndian.PutUint16(rdlen[:], uint16(len(rdata)))
 	resp = append(resp, rdlen[:]...)
 	resp = append(resp, rdata...)
+	return resp
+}
+
+// buildNODATA answers a query with NOERROR and zero records (the name
+// exists conceptually but has no data of that type — e.g. AAAA for an
+// IPv4-only answer, or HTTPS/SVCB to suppress HTTP/3 discovery).
+func buildNODATA(query []byte) []byte {
+	resp := make([]byte, len(query))
+	copy(resp, query)
+	flags := binary.BigEndian.Uint16(query[2:4])
+	flags |= 0x8000 // QR=1
+	flags |= 0x0080 // RA=1
+	binary.BigEndian.PutUint16(resp[2:4], flags)
+	binary.BigEndian.PutUint16(resp[6:8], 0)   // ANCOUNT
+	binary.BigEndian.PutUint16(resp[8:10], 0)  // NSCOUNT
+	binary.BigEndian.PutUint16(resp[10:12], 0) // ARCOUNT
 	return resp
 }
 

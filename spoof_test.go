@@ -121,3 +121,54 @@ func TestWithPort(t *testing.T) {
 		}
 	}
 }
+
+// TestSpoofNODATA verifies AAAA and HTTPS/SVCB queries for handled names get
+// NODATA (NOERROR, zero answers) so clients never attempt QUIC/HTTP3 or a
+// bogus IPv6 address.
+func TestSpoofNODATA(t *testing.T) {
+	rs, err := LoadRules(writeRules(t, `
+rules:
+  - match: ["*.npmjs.org"]
+    action: rewrite
+    target: "gw:8080"
+default: direct
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &SpoofDNS{SelfIP: "10.0.0.9", Decider: NewDecider(rs, false, nil), Logger: NewConnLogger(), UpstreamDNS: nil}
+
+	for _, qt := range []uint16{dnsTypeAAAA, dnsTypeHTTPS, dnsTypeSVCB} {
+		resp := s.handle(buildQuery(t, "registry.npmjs.org", qt))
+		if resp == nil {
+			t.Fatalf("qtype %d: no response", qt)
+		}
+		if rcode := resp[3] & 0x0f; rcode != 0 {
+			t.Fatalf("qtype %d: RCODE = %d, want 0 (NODATA)", qt, rcode)
+		}
+		if ancount := int(resp[6])<<8 | int(resp[7]); ancount != 0 {
+			t.Fatalf("qtype %d: ANCOUNT = %d, want 0", qt, ancount)
+		}
+	}
+}
+
+// TestSpoofDirectNODATA verifies mitm_default direct names also get NODATA
+// for AAAA/HTTPS (so the client sticks to the A record pointed at the
+// sidecar).
+func TestSpoofDirectNODATA(t *testing.T) {
+	rs, err := LoadRules(writeRules(t, "rules: []\ndefault: direct\nmitm_default: true\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &SpoofDNS{SelfIP: "10.0.0.9", Decider: NewDecider(rs, true, nil), Logger: NewConnLogger()}
+	resp := s.handle(buildQuery(t, "example.com", dnsTypeAAAA))
+	if resp == nil {
+		t.Fatal("no response")
+	}
+	if rcode := resp[3] & 0x0f; rcode != 0 {
+		t.Fatalf("RCODE = %d", rcode)
+	}
+	if ancount := int(resp[6])<<8 | int(resp[7]); ancount != 0 {
+		t.Fatalf("ANCOUNT = %d, want 0", ancount)
+	}
+}

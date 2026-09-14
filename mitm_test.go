@@ -36,9 +36,9 @@ func TestRewriteHostPreserved(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = ln.Close() }()
-	go func() { _ = ServeConnect(ln, NewDecider(mustRules(t, target), false, nil), mitm, NewConnLogger()) }()
+	go func() { _ = serveSpoofTLS(ln, NewDecider(mustRules(t, target), false, nil), mitm, NewConnLogger()) }()
 
-	c := dialVia(t, ln.Addr().String(), "registry.npmjs.org:443", caPEM)
+	c := spoofTLS(t, ln.Addr().String(), "registry.npmjs.org", caPEM)
 	defer func() { _ = c.Close() }()
 	if _, err := c.Write([]byte("GET /pkgs/npm/react HTTP/1.1\r\nHost: registry.npmjs.org\r\nConnection: close\r\n\r\n")); err != nil {
 		t.Fatal(err)
