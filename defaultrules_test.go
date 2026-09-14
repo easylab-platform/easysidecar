@@ -35,22 +35,22 @@ func TestDefaultRulesYAMLParses(t *testing.T) {
 
 func TestDefaultRulesCoverEcosystems(t *testing.T) {
 	cases := map[string]bool{
-		"registry-1.docker.io":            true,
-		"registry.npmjs.org":              true,
-		"pypi.org":                        true,
-		"files.pythonhosted.org":          true,
-		"proxy.golang.org":                true,
-		"crates.io":                       true,
-		"repo.maven.apache.org":           true,
-		"api.nuget.org":                   true,
-		"rubygems.org":                    true,
-		"dl-cdn.alpinelinux.org":          true,
-		"deb.debian.org":                  true,
-		"archive.ubuntu.com":              true,
-		"cdn-lfs.huggingface.co":          true,
-		"conda.anaconda.org":              true,
-		"cache.nixos.org":                 true,
-		"example.com":                     false, // not an upstream: direct
+		"registry-1.docker.io":   true,
+		"registry.npmjs.org":     true,
+		"pypi.org":               true,
+		"files.pythonhosted.org": true,
+		"proxy.golang.org":       true,
+		"crates.io":              true,
+		"repo.maven.apache.org":  true,
+		"api.nuget.org":          true,
+		"rubygems.org":           true,
+		"dl-cdn.alpinelinux.org": true,
+		"deb.debian.org":         true,
+		"archive.ubuntu.com":     true,
+		"cdn-lfs.huggingface.co": true,
+		"conda.anaconda.org":     true,
+		"cache.nixos.org":        true,
+		"example.com":            false, // not an upstream: direct
 	}
 	for host, want := range cases {
 		if got := HasUpstreamDomain(host); got != want {
