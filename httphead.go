@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 )
@@ -171,11 +172,12 @@ func cutHeader(line, key string) (string, bool) {
 	return "", false
 }
 
-// bufferedConn is a net.Conn whose reads first drain a buffered reader
-// (everything the proxy sent after its status line).
+// bufferedConn is a net.Conn whose reads come from an alternate reader
+// (replayed request head + buffered bytes), falling through writes/close to
+// the wrapped conn.
 type bufferedConn struct {
 	net.Conn
-	r *bufio.Reader
+	r io.Reader
 }
 
 func (b *bufferedConn) Read(p []byte) (int, error) { return b.r.Read(p) }

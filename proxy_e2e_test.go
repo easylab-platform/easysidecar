@@ -177,7 +177,7 @@ func TestSpoofE2ERewriteAddPrefix(t *testing.T) {
 	f, addr := newE2E(t)
 	c := spoofTLS(t, addr, "pkgs.example", f.caPEM)
 	defer func() { _ = c.Close() }()
-	if _, err := c.Write([]byte("GET /react HTTP/1.1\r\nHost: registry.npmjs.org\r\nConnection: close\r\n\r\n")); err != nil {
+	if _, err := c.Write([]byte("GET /react HTTP/1.1\r\nHost: pkgs.example\r\nConnection: close\r\n\r\n")); err != nil {
 		t.Fatal(err)
 	}
 	br := bufio.NewReader(c)
@@ -186,7 +186,31 @@ func TestSpoofE2ERewriteAddPrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 	body, _ := io.ReadAll(resp.Body)
-	if string(body) != "REWRITTEN-registry.npmjs.org/pkgs/npm/react" {
+	if string(body) != "REWRITTEN-pkgs.example/pkgs/npm/react" {
 		t.Fatalf("body = %q", body)
+	}
+}
+
+// TestSpoofE2ERewriteKeepAlive verifies a second request on the SAME TLS
+// connection is also path-mapped (net/http proxying, not one-shot splice).
+func TestSpoofE2ERewriteKeepAlive(t *testing.T) {
+	f, addr := newE2E(t)
+	c := spoofTLS(t, addr, "pkgs.example", f.caPEM)
+	defer func() { _ = c.Close() }()
+	br := bufio.NewReader(c)
+	for i, path := range []string{"/one", "/two"} {
+		if _, err := c.Write([]byte("GET " + path + " HTTP/1.1\r\nHost: pkgs.example\r\n\r\n")); err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.ReadResponse(br, &http.Request{Method: "GET"})
+		if err != nil {
+			t.Fatalf("req %d: %v", i, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		want := "REWRITTEN-pkgs.example/pkgs/npm" + path
+		if string(body) != want {
+			t.Fatalf("req %d body = %q want %q", i, body, want)
+		}
 	}
 }

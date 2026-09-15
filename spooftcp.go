@@ -1,11 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httputil"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -145,11 +150,11 @@ func (s *SpoofTCP) mitmRelay(c net.Conn, r io.Reader, host string, e ConnLogEntr
 	_ = relay(tlsSrv, tlsUp, s.Logger, e)
 }
 
-// rewriteRelay terminates the client TLS and forwards the decrypted stream to
-// the rule target (an easylab pull-through endpoint reached inside the
-// cluster over plain HTTP). r replays the classification-read bytes. The
-// request-line path is mapped through the rule's strip/add prefixes before
-// the head is forwarded (the Host header is preserved verbatim).
+// rewriteRelay terminates the client TLS and proxies the decrypted HTTP
+// traffic to the rule target (an easylab pull-through endpoint reached inside
+// the cluster). r replays the classification-read bytes. Every request on the
+// (keep-alive) connection has its path mapped through the rule's strip/add
+// prefixes before forwarding; the original Host header is preserved.
 func (s *SpoofTCP) rewriteRelay(c net.Conn, r io.Reader, rule *Rule, host string, e ConnLogEntry) {
 	tlsCfg, err := s.MITM.TLSConfigFor(host)
 	if err != nil {
@@ -165,53 +170,91 @@ func (s *SpoofTCP) rewriteRelay(c net.Conn, r io.Reader, rule *Rule, host string
 		_ = c.Close()
 		return
 	}
-	scheme, addr := parseTarget(rule.Target)
-	var up net.Conn
-	if scheme == "https" {
-		tlsUp := tls.Client(mustDial(addr, e, s.Logger), &tls.Config{ServerName: hostOf(addr), InsecureSkipVerify: false})
-		if err := tlsUp.Handshake(); err != nil {
-			e.Err = "target handshake: " + err.Error()
-			s.Logger.Log(e)
-			_ = tlsSrv.Close()
-			return
-		}
-		up = tlsUp
-	} else {
-		up = mustDial(addr, e, s.Logger)
+	defer func() { _ = tlsSrv.Close() }()
+	if err := s.serveRewritten(tlsSrv, rule, host); err != nil {
+		e.Err = err.Error()
 	}
-	defer func() { _ = up.Close() }()
-	if !forwardRequest(tlsSrv, up, rule, s.Logger, e) {
-		return
-	}
+	s.Logger.Log(e)
 }
 
-// forwardRequest reads the HTTP request head from the (already decrypted)
-// downstream conn, maps its request-line path through the rule prefixes, and
-// writes it to the upstream before splicing the remainder. Returns false when
-// the head could not be read or forwarded. Non-HTTP / headless traffic is
-// replayed verbatim (no path mapping possible).
-func forwardRequest(down net.Conn, up net.Conn, rule *Rule, logger *ConnLogger, e ConnLogEntry) bool {
-	br := newHeaderReader(down)
-	if _, err := br.readHost(); err != nil {
-		// Not an HTTP/1.x request head: replay whatever was read and splice.
-		if len(br.bufferedAll()) > 0 {
-			if _, werr := up.Write(br.bufferedAll()); werr != nil {
-				e.Err = werr.Error()
-				logger.Log(e)
-				return false
-			}
-		}
-		_ = relay(down, up, logger, e)
-		return true
+// serveRewritten runs an HTTP/1.1 proxy over one already-established
+// connection: each request is re-originated to the rule target with its path
+// mapped (host preserved), responses stream back unchanged. This keeps
+// keep-alive, chunked bodies, and multiple requests per connection correct —
+// a raw byte splice would only rewrite the first request head.
+func (s *SpoofTCP) serveRewritten(conn net.Conn, rule *Rule, host string) error {
+	scheme, addr := parseTarget(rule.Target)
+	transport := &http.Transport{}
+	if scheme == "https" {
+		transport.TLSClientConfig = &tls.Config{ServerName: hostOf(addr)}
 	}
-	if _, err := up.Write(br.rewrite(rule.MapPath)); err != nil {
-		e.Err = err.Error()
-		logger.Log(e)
-		return false
+	rp := &httputil.ReverseProxy{
+		Transport: transport,
+		Director: func(req *http.Request) {
+			req.URL.Scheme = scheme
+			req.URL.Host = addr
+			req.URL.Path = rule.MapPath(req.URL.Path)
+			req.Host = host // preserve the upstream's Host for adapter routing
+		},
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
+			w.WriteHeader(http.StatusBadGateway)
+		},
 	}
-	_ = relay(&bufferedConn{Conn: down, r: br.br}, up, logger, e)
-	return true
+	ln := newSingleConnListener(conn)
+	srv := &http.Server{Handler: rp, ReadHeaderTimeout: 30 * time.Second}
+	err := srv.Serve(ln)
+	if err == nil || errors.Is(err, net.ErrClosed) || errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
 }
+
+// singleConnListener yields one prepared connection, then blocks until that
+// connection is closed (used to layer net/http over an already-handshaked
+// conn without a real listener).
+type singleConnListener struct {
+	conn net.Conn
+	done chan struct{}
+	once sync.Once
+}
+
+func newSingleConnListener(c net.Conn) *singleConnListener {
+	return &singleConnListener{conn: c, done: make(chan struct{})}
+}
+
+func (l *singleConnListener) Accept() (net.Conn, error) {
+	if l.conn != nil {
+		c := l.conn
+		l.conn = nil
+		return &notifyCloseConn{Conn: c, ln: l}, nil
+	}
+	<-l.done
+	return nil, net.ErrClosed
+}
+
+func (l *singleConnListener) Close() error {
+	l.once.Do(func() { close(l.done) })
+	return nil
+}
+
+func (l *singleConnListener) Addr() net.Addr { return dummyAddr("easyproxy") }
+
+// notifyCloseConn signals its listener when net/http closes the connection.
+type notifyCloseConn struct {
+	net.Conn
+	ln *singleConnListener
+}
+
+func (c *notifyCloseConn) Close() error {
+	err := c.Conn.Close()
+	_ = c.ln.Close()
+	return err
+}
+
+type dummyAddr string
+
+func (d dummyAddr) Network() string { return string(d) }
+func (d dummyAddr) String() string  { return string(d) }
 
 // parseTarget splits a rule target into (scheme, "host:port"). Plain is
 // assumed when no scheme is present (in-cluster pull-through endpoints).
@@ -326,19 +369,16 @@ func (s *SpoofTCP) handleHTTP(c net.Conn) {
 		s.Logger.Log(e)
 		resetConn(c)
 	case ActionRewrite:
-		up, err := net.DialTimeout("tcp", dec.Rule.Target, 10*time.Second)
-		if err != nil {
+		// Run a full HTTP/1.1 proxy over the (plain) connection so every
+		// request on a keep-alive connection gets its path mapped. The head
+		// already consumed by readHost is replayed ahead of the rest.
+		e.Action = "rewrite"
+		e.Rule = firstMatch(dec)
+		replay := io.MultiReader(bytes.NewReader(br.buf), br.br)
+		if err := s.serveRewritten(&bufferedConn{Conn: c, r: replay}, dec.Rule, host); err != nil {
 			e.Err = err.Error()
-			s.Logger.Log(e)
-			return
 		}
-		defer func() { _ = up.Close() }()
-		// Replay the parsed request head (with the original Host preserved),
-		// mapping the request-line path through the rule prefixes.
-		if _, err := up.Write(br.rewrite(dec.Rule.MapPath)); err != nil {
-			return
-		}
-		_ = relay(&bufferedConn{Conn: c, r: br.br}, up, s.Logger, e)
+		s.Logger.Log(e)
 	case ActionDirect:
 		up, err := s.dialEgress(net.JoinHostPort(host, "80"), e)
 		if err != nil {
