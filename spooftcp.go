@@ -98,9 +98,13 @@ func (s *SpoofTCP) handleTLS(c net.Conn) {
 			resetConn(c)
 			return
 		}
+		// Log the classification immediately: the relayed connection may stay
+		// open (keep-alive clients such as apt/cargo/maven), and the audit
+		// entry must not wait for it to close.
 		e.Action = "rewrite"
 		e.Rule = firstMatch(dec)
 		e.Mitm = true
+		s.Logger.Log(e)
 		s.rewriteRelay(c, tr.replay(), dec.Rule, host, e)
 
 	case ActionDirect:
@@ -173,8 +177,8 @@ func (s *SpoofTCP) rewriteRelay(c net.Conn, r io.Reader, rule *Rule, host string
 	defer func() { _ = tlsSrv.Close() }()
 	if err := s.serveRewritten(tlsSrv, rule, host); err != nil {
 		e.Err = err.Error()
+		s.Logger.Log(e)
 	}
-	s.Logger.Log(e)
 }
 
 // serveRewritten runs an HTTP/1.1 proxy over one already-established
@@ -372,13 +376,14 @@ func (s *SpoofTCP) handleHTTP(c net.Conn) {
 		// Run a full HTTP/1.1 proxy over the (plain) connection so every
 		// request on a keep-alive connection gets its path mapped. The head
 		// already consumed by readHost is replayed ahead of the rest.
+		// Log at classification time (a keep-alive relay may stay open).
 		e.Action = "rewrite"
 		e.Rule = firstMatch(dec)
+		s.Logger.Log(e)
 		replay := io.MultiReader(bytes.NewReader(br.buf), br.br)
 		if err := s.serveRewritten(&bufferedConn{Conn: c, r: replay}, dec.Rule, host); err != nil {
-			e.Err = err.Error()
+			s.Logger.Log(ConnLogEntry{Host: host, Dst: e.Dst, Action: "rewrite", Err: err.Error()})
 		}
-		s.Logger.Log(e)
 	case ActionDirect:
 		up, err := s.dialEgress(net.JoinHostPort(host, "80"), e)
 		if err != nil {
