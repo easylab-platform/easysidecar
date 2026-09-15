@@ -23,13 +23,45 @@ type Rule struct {
 	Match []string `yaml:"match"`
 	// Action is block, direct, or rewrite.
 	Action Action `yaml:"action"`
-	// Target is the rewrite destination, "host:port" plus an optional path
-	// prefix that replaces the original absolute path (used to steer
-	// registry.npmjs.org/pkg → gateway/pkgs/npm/pkg).
+	// Target is the rewrite destination, "host:port" (an optional scheme://
+	// prefix selects client TLS to the target). The original path is used
+	// verbatim unless StripPrefix/AddPrefix transform it.
 	Target string `yaml:"target,omitempty"`
+	// StripPrefix removes a leading path prefix from the incoming request
+	// path before AddPrefix is applied (no-op when it does not match).
+	StripPrefix string `yaml:"strip_prefix,omitempty"`
+	// AddPrefix prepends a path prefix after stripping (e.g. "/pkgs/npm" to
+	// steer registry.npmjs.org/react → artifact/pkgs/npm/react).
+	AddPrefix string `yaml:"add_prefix,omitempty"`
 	// Mitm forces decryption for this rule even when MitmDefault is false
 	// (rewrite rules decrypt regardless; a block/direct rule never does).
 	Mitm bool `yaml:"mitm,omitempty"`
+}
+
+// MapPath applies the rule's strip/add prefix transform to an absolute
+// request path. Both prefixes are optional; the result always has a leading
+// slash. StripPrefix removes a leading segment boundary (exact match or
+// followed by "/"), so stripping "/v2" from "/v2/foo" yields "/foo" but
+// leaves "/v20" untouched.
+func (r *Rule) MapPath(p string) string {
+	if r.StripPrefix != "" {
+		sp := r.StripPrefix
+		switch {
+		case strings.HasSuffix(sp, "/"):
+			p = strings.TrimPrefix(p, sp)
+		case p == sp:
+			p = "/"
+		case strings.HasPrefix(p, sp+"/"):
+			p = p[len(sp):]
+		}
+	}
+	if r.AddPrefix != "" {
+		p = strings.TrimSuffix(r.AddPrefix, "/") + "/" + strings.TrimPrefix(p, "/")
+	}
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return p
 }
 
 // RuleSet is the parsed policy. First matching rule wins.

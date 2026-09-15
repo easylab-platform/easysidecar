@@ -88,7 +88,8 @@ func copyOne(dst io.Writer, src io.Reader) (int64, error) {
 
 // closeOne finishes a relayed direction: TCP conns get a graceful
 // half-close; TLS conns get a full Close (sends close_notify so the peer's
-// read unblocks — tls.Conn has no exposed half-close).
+// read unblocks — tls.Conn has no exposed half-close). Conn wrappers expose
+// CloseWrite so they keep the same behavior.
 func closeOne(c net.Conn) {
 	if _, isTLS := c.(*tls.Conn); isTLS {
 		_ = c.Close()
@@ -98,4 +99,9 @@ func closeOne(c net.Conn) {
 		_ = tcp.CloseWrite()
 		return
 	}
+	if cw, ok := c.(interface{ CloseWrite() error }); ok {
+		_ = cw.CloseWrite()
+		return
+	}
+	_ = c.Close()
 }

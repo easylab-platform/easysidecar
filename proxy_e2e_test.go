@@ -43,6 +43,10 @@ rules:
   - match: ["*.npmjs.org"]
     action: rewrite
     target: "` + stripScheme(rewrite.URL) + `"
+  - match: ["pkgs.example"]
+    action: rewrite
+    target: "` + stripScheme(rewrite.URL) + `"
+    add_prefix: "/pkgs/npm"
   - match: ["blocked.example"]
     action: block
 default: direct
@@ -163,6 +167,26 @@ func TestSpoofE2ERewriteMITM(t *testing.T) {
 	}
 	body, _ := io.ReadAll(resp.Body)
 	if string(body) != "REWRITTEN-registry.npmjs.org/pkg" {
+		t.Fatalf("body = %q", body)
+	}
+}
+
+// TestSpoofE2ERewriteAddPrefix verifies the request-line path is prefixed
+// before relay (Host preserved; the adapter routes by host + prefix).
+func TestSpoofE2ERewriteAddPrefix(t *testing.T) {
+	f, addr := newE2E(t)
+	c := spoofTLS(t, addr, "pkgs.example", f.caPEM)
+	defer func() { _ = c.Close() }()
+	if _, err := c.Write([]byte("GET /react HTTP/1.1\r\nHost: registry.npmjs.org\r\nConnection: close\r\n\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	br := bufio.NewReader(c)
+	resp, err := http.ReadResponse(br, &http.Request{Method: "GET"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "REWRITTEN-registry.npmjs.org/pkgs/npm/react" {
 		t.Fatalf("body = %q", body)
 	}
 }

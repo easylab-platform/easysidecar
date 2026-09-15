@@ -147,7 +147,9 @@ func (s *SpoofTCP) mitmRelay(c net.Conn, r io.Reader, host string, e ConnLogEntr
 
 // rewriteRelay terminates the client TLS and forwards the decrypted stream to
 // the rule target (an easylab pull-through endpoint reached inside the
-// cluster over plain HTTP). r replays the classification-read bytes.
+// cluster over plain HTTP). r replays the classification-read bytes. The
+// request-line path is mapped through the rule's strip/add prefixes before
+// the head is forwarded (the Host header is preserved verbatim).
 func (s *SpoofTCP) rewriteRelay(c net.Conn, r io.Reader, rule *Rule, host string, e ConnLogEntry) {
 	tlsCfg, err := s.MITM.TLSConfigFor(host)
 	if err != nil {
@@ -178,7 +180,37 @@ func (s *SpoofTCP) rewriteRelay(c net.Conn, r io.Reader, rule *Rule, host string
 		up = mustDial(addr, e, s.Logger)
 	}
 	defer func() { _ = up.Close() }()
-	_ = relay(tlsSrv, up, s.Logger, e)
+	if !forwardRequest(tlsSrv, up, rule, s.Logger, e) {
+		return
+	}
+}
+
+// forwardRequest reads the HTTP request head from the (already decrypted)
+// downstream conn, maps its request-line path through the rule prefixes, and
+// writes it to the upstream before splicing the remainder. Returns false when
+// the head could not be read or forwarded. Non-HTTP / headless traffic is
+// replayed verbatim (no path mapping possible).
+func forwardRequest(down net.Conn, up net.Conn, rule *Rule, logger *ConnLogger, e ConnLogEntry) bool {
+	br := newHeaderReader(down)
+	if _, err := br.readHost(); err != nil {
+		// Not an HTTP/1.x request head: replay whatever was read and splice.
+		if len(br.bufferedAll()) > 0 {
+			if _, werr := up.Write(br.bufferedAll()); werr != nil {
+				e.Err = werr.Error()
+				logger.Log(e)
+				return false
+			}
+		}
+		_ = relay(down, up, logger, e)
+		return true
+	}
+	if _, err := up.Write(br.rewrite(rule.MapPath)); err != nil {
+		e.Err = err.Error()
+		logger.Log(e)
+		return false
+	}
+	_ = relay(&bufferedConn{Conn: down, r: br.br}, up, logger, e)
+	return true
 }
 
 // parseTarget splits a rule target into (scheme, "host:port"). Plain is
@@ -301,11 +333,12 @@ func (s *SpoofTCP) handleHTTP(c net.Conn) {
 			return
 		}
 		defer func() { _ = up.Close() }()
-		// Replay the parsed request head (with the original Host preserved).
-		if _, err := up.Write(br.bufferedAll()); err != nil {
+		// Replay the parsed request head (with the original Host preserved),
+		// mapping the request-line path through the rule prefixes.
+		if _, err := up.Write(br.rewrite(dec.Rule.MapPath)); err != nil {
 			return
 		}
-		_ = relay(c, up, s.Logger, e)
+		_ = relay(&bufferedConn{Conn: c, r: br.br}, up, s.Logger, e)
 	case ActionDirect:
 		up, err := s.dialEgress(net.JoinHostPort(host, "80"), e)
 		if err != nil {
