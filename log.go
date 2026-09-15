@@ -36,7 +36,7 @@ type ConnLogEntry struct {
 
 // Log emits an entry; logging failures are swallowed (never break traffic).
 func (l *ConnLogger) Log(e ConnLogEntry) {
-	if l == nil {
+	if l == nil || l.w == nil {
 		return
 	}
 	e.TS = time.Now().UTC().Format(time.RFC3339Nano)

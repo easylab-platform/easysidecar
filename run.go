@@ -20,7 +20,7 @@ func runProxy(cfg *Config) error {
 	if err != nil {
 		return err
 	}
-	logger := &ConnLogger{}
+	logger := NewConnLogger()
 	decisions := NewDecider(rules, cfg.MitmDefault, cfg.BypassCIDRs)
 
 	// MITM authority (nil when no CA configured: rewrite rules then fail
