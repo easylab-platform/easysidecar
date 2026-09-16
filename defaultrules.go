@@ -35,6 +35,8 @@ var defaultUpstreams = []upstreamDomain{
 	{Match: []string{"rubygems.org", "index.rubygems.org"}},
 	{Match: []string{"repo.packagist.org"}},
 	{Match: []string{"repo.hex.pm"}},
+	// hex.pm itself is the API host: publish, search and `mix hex.user auth`.
+	{Match: []string{"hex.pm", "api.hex.pm"}},
 	{Match: []string{"pub.dev"}},
 	{Match: []string{"charts.helm.sh"}},
 	{Match: []string{"center.conan.io", "center2.conan.io"}},
