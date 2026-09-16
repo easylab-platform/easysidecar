@@ -89,5 +89,11 @@ func (m *MITM) TLSConfigFor(host string) (*tls.Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &tls.Config{Certificates: []tls.Certificate{*leaf}}, nil
+	// Advertise h2 in ALPN: gRPC/Connect clients (buf, some SDKs) require it.
+	// serveRewritten branches on the negotiated protocol, so an h2-capable
+	// client gets a real HTTP/2 server; everyone else falls back to HTTP/1.1.
+	return &tls.Config{
+		Certificates: []tls.Certificate{*leaf},
+		NextProtos:   []string{"h2", "http/1.1"},
+	}, nil
 }

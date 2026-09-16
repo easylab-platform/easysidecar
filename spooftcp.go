@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/net/http2"
 )
 
 // This file implements the spoof-mode TCP faces: the sidecar listens directly
@@ -181,18 +183,16 @@ func (s *SpoofTCP) rewriteRelay(c net.Conn, r io.Reader, rule *Rule, host string
 	}
 }
 
-// serveRewritten runs an HTTP/1.1 proxy over one already-established
-// connection: each request is re-originated to the rule target with its path
-// mapped (host preserved), responses stream back unchanged. This keeps
-// keep-alive, chunked bodies, and multiple requests per connection correct —
-// a raw byte splice would only rewrite the first request head.
-func (s *SpoofTCP) serveRewritten(conn net.Conn, rule *Rule, host string) error {
+// rewriteProxy builds the request-rewriting reverse proxy shared by the
+// HTTP/1.1 and HTTP/2 faces: each request is re-originated to the rule target
+// with its path mapped and the original Host preserved.
+func (s *SpoofTCP) rewriteProxy(rule *Rule, host string) *httputil.ReverseProxy {
 	scheme, addr := parseTarget(rule.Target)
 	transport := &http.Transport{}
 	if scheme == "https" {
 		transport.TLSClientConfig = &tls.Config{ServerName: hostOf(addr)}
 	}
-	rp := &httputil.ReverseProxy{
+	return &httputil.ReverseProxy{
 		Transport: transport,
 		Director: func(req *http.Request) {
 			req.URL.Scheme = scheme
@@ -203,6 +203,26 @@ func (s *SpoofTCP) serveRewritten(conn net.Conn, rule *Rule, host string) error 
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
 			w.WriteHeader(http.StatusBadGateway)
 		},
+	}
+}
+
+// serveRewritten runs an HTTP proxy over one already-established connection:
+// each request is re-originated to the rule target with its path mapped (host
+// preserved), responses stream back unchanged. This keeps keep-alive, chunked
+// bodies, and multiple requests per connection correct — a raw byte splice
+// would only rewrite the first request head.
+//
+// The TLS face may negotiate h2 (gRPC/Connect clients require it); an
+// *http.Server only speaks HTTP/1.1, so h2 connections are handed to an
+// http2.Server and everyone else keeps the HTTP/1.1 path.
+func (s *SpoofTCP) serveRewritten(conn net.Conn, rule *Rule, host string) error {
+	rp := s.rewriteProxy(rule, host)
+	if tc, ok := conn.(*tls.Conn); ok {
+		if tc.ConnectionState().NegotiatedProtocol == "h2" {
+			h2 := &http2.Server{}
+			h2.ServeConn(conn, &http2.ServeConnOpts{Handler: rp})
+			return nil
+		}
 	}
 	ln := newSingleConnListener(conn)
 	srv := &http.Server{Handler: rp, ReadHeaderTimeout: 30 * time.Second}
