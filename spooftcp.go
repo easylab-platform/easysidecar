@@ -177,7 +177,7 @@ func (s *SpoofTCP) rewriteRelay(c net.Conn, r io.Reader, rule *Rule, host string
 		return
 	}
 	defer func() { _ = tlsSrv.Close() }()
-	if err := s.serveRewritten(tlsSrv, rule, host); err != nil {
+	if err := s.serveRewritten(tlsSrv, rule, host, "https"); err != nil {
 		e.Err = err.Error()
 		s.Logger.Log(e)
 	}
@@ -186,7 +186,19 @@ func (s *SpoofTCP) rewriteRelay(c net.Conn, r io.Reader, rule *Rule, host string
 // rewriteProxy builds the request-rewriting reverse proxy shared by the
 // HTTP/1.1 and HTTP/2 faces: each request is re-originated to the rule target
 // with its path mapped and the original Host preserved.
-func (s *SpoofTCP) rewriteProxy(rule *Rule, host string) *httputil.ReverseProxy {
+//
+// Besides preserving the Host header, it records the origin the client used so
+// the gateway can reconstruct the real upstream URL without a per-ecosystem
+// table:
+//
+//	X-Forwarded-Host    the upstream hostname the client dialed (pypi.org)
+//	X-Forwarded-Proto   the scheme the client used (http|https)
+//	X-Forwarded-Prefix  the path prefix stripped before forwarding (/maven2)
+//
+// They are advisory: the gateway only honors them for hosts it already knows
+// (see artifactkit's host allow-list), so a hostile client cannot point the
+// mirror at an arbitrary origin.
+func (s *SpoofTCP) rewriteProxy(rule *Rule, host, origScheme string) *httputil.ReverseProxy {
 	scheme, addr := parseTarget(rule.Target)
 	transport := &http.Transport{}
 	if scheme == "https" {
@@ -199,6 +211,13 @@ func (s *SpoofTCP) rewriteProxy(rule *Rule, host string) *httputil.ReverseProxy 
 			req.URL.Host = addr
 			req.URL.Path = rule.MapPath(req.URL.Path)
 			req.Host = host // preserve the upstream's Host for adapter routing
+			req.Header.Set("X-Forwarded-Host", host)
+			req.Header.Set("X-Forwarded-Proto", origScheme)
+			if rule.StripPrefix != "" {
+				req.Header.Set("X-Forwarded-Prefix", rule.StripPrefix)
+			} else {
+				req.Header.Del("X-Forwarded-Prefix")
+			}
 		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
 			w.WriteHeader(http.StatusBadGateway)
@@ -215,8 +234,8 @@ func (s *SpoofTCP) rewriteProxy(rule *Rule, host string) *httputil.ReverseProxy 
 // The TLS face may negotiate h2 (gRPC/Connect clients require it); an
 // *http.Server only speaks HTTP/1.1, so h2 connections are handed to an
 // http2.Server and everyone else keeps the HTTP/1.1 path.
-func (s *SpoofTCP) serveRewritten(conn net.Conn, rule *Rule, host string) error {
-	rp := s.rewriteProxy(rule, host)
+func (s *SpoofTCP) serveRewritten(conn net.Conn, rule *Rule, host, origScheme string) error {
+	rp := s.rewriteProxy(rule, host, origScheme)
 	if tc, ok := conn.(*tls.Conn); ok {
 		if tc.ConnectionState().NegotiatedProtocol == "h2" {
 			h2 := &http2.Server{}
@@ -401,7 +420,7 @@ func (s *SpoofTCP) handleHTTP(c net.Conn) {
 		e.Rule = firstMatch(dec)
 		s.Logger.Log(e)
 		replay := io.MultiReader(bytes.NewReader(br.buf), br.br)
-		if err := s.serveRewritten(&bufferedConn{Conn: c, r: replay}, dec.Rule, host); err != nil {
+		if err := s.serveRewritten(&bufferedConn{Conn: c, r: replay}, dec.Rule, host, "http"); err != nil {
 			s.Logger.Log(ConnLogEntry{Host: host, Dst: e.Dst, Action: "rewrite", Err: err.Error()})
 		}
 	case ActionDirect:

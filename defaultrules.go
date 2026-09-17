@@ -23,8 +23,16 @@ type upstreamDomain struct {
 // per package-manager ecosystem. Adding an ecosystem in artifact means
 // adding it here so egress policy covers it by default.
 var defaultUpstreams = []upstreamDomain{
-	// OCI / containers.
-	{Match: []string{"registry-1.docker.io", "docker.io", "production.cloudflare.docker.com"}},
+	// OCI / containers. The public registries a client reaches by name; each
+	// is preserved as the Host (and therefore the repository namespace) by the
+	// rewrite relay, so ghcr.io/acme/app and docker.io/acme/app stay distinct.
+	{Match: []string{"registry-1.docker.io", "docker.io", "index.docker.io"}},
+	{Match: []string{"ghcr.io", "quay.io", "gcr.io", "registry.k8s.io",
+		"mcr.microsoft.com", "public.ecr.aws", "nvcr.io"}},
+	// Container blob CDNs: registries 307-redirect layer downloads here, and
+	// artifact follows the redirect itself. Rewriting these to the gateway
+	// would hand it a CDN URL it cannot resolve, so they stay direct.
+	{Match: []string{"production.cloudflare.docker.com", "*.cloudflarestorage.com"}},
 	// Language registries.
 	{Match: []string{"registry.npmjs.org", "*.npmjs.org"}},
 	{Match: []string{"pypi.org", "files.pythonhosted.org"}},
@@ -51,6 +59,9 @@ var defaultUpstreams = []upstreamDomain{
 	{Match: []string{"repo.anaconda.com", "conda.anaconda.org"}},
 	// Nix binary cache.
 	{Match: []string{"cache.nixos.org"}},
+	// Source mirrors: git smart-HTTP (git protocol) and Ivy repositories.
+	{Match: []string{"github.com", "codeload.github.com"}},
+	{Match: []string{"repo.scala-sbt.org", "scala.jfrog.io"}},
 }
 
 // DefaultRulesYAML renders the built-in rule set with the given gateway

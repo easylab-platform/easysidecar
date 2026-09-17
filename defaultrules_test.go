@@ -61,8 +61,13 @@ func TestDefaultRulesCoverEcosystems(t *testing.T) {
 
 func TestDefaultRulesYAMLShape(t *testing.T) {
 	y := DefaultRulesYAML("gw:80")
-	if !strings.Contains(y, `match: ["registry-1.docker.io", "docker.io", "production.cloudflare.docker.com"]`) {
-		t.Fatalf("OCI rule missing:\n%s", y)
+	// Docker Hub (aliases folded to docker.io by the adapter) plus the public
+	// registries a client addresses by name.
+	if !strings.Contains(y, `match: ["registry-1.docker.io", "docker.io", "index.docker.io"]`) {
+		t.Fatalf("docker hub rule missing:\n%s", y)
+	}
+	if !strings.Contains(y, `"ghcr.io"`) || !strings.Contains(y, `"quay.io"`) {
+		t.Fatalf("public registry rule missing:\n%s", y)
 	}
 	if strings.Contains(y, "@@") || strings.Contains(y, "/pkgs/") {
 		t.Fatal("targets must be bare host:port (routing is by preserved Host)")
