@@ -154,22 +154,16 @@ type Decision struct {
 type Decider struct {
 	rs          *RuleSet
 	mitmDefault bool
-	bypass      []string
 }
 
-// NewDecider builds a Decider. bypassCIDRs are destinations that must never
-// be intercepted (defense in depth: the iptables RETURN rules already keep
-// them away; this guards a misconfigured init).
-func NewDecider(rs *RuleSet, mitmDefault bool, bypassCIDRs []string) *Decider {
-	return &Decider{rs: rs, mitmDefault: mitmDefault || rs.MitmDefault, bypass: bypassCIDRs}
+// NewDecider builds a Decider over an immutable rule set.
+func NewDecider(rs *RuleSet, mitmDefault bool) *Decider {
+	return &Decider{rs: rs, mitmDefault: mitmDefault || rs.MitmDefault}
 }
 
 // Decide classifies by hostname and (for fallback classification) the
 // original destination address.
 func (d *Decider) Decide(host, origDstIP string) Decision {
-	if inAnyCIDR(origDstIP, d.bypass) {
-		return Decision{Action: ActionDirect, Host: host}
-	}
 	for i := range d.rs.Rules {
 		r := &d.rs.Rules[i]
 		for _, m := range r.Match {

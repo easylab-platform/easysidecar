@@ -76,7 +76,7 @@ default: direct
 		t.Fatal(err)
 	}
 
-	dec := NewDecider(rs, false, nil)
+	dec := NewDecider(rs, false)
 	proxyLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

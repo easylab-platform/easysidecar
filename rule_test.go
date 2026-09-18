@@ -84,7 +84,7 @@ func TestDeciderMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := NewDecider(rs, false, []string{"10.96.0.0/12"})
+	d := NewDecider(rs, false)
 	cases := []struct {
 		host, origIP string
 		action       Action
@@ -93,8 +93,7 @@ func TestDeciderMatrix(t *testing.T) {
 		{"registry-1.docker.io", "8.8.8.8", ActionRewrite, true},
 		{"registry.npmjs.org", "8.8.8.8", ActionRewrite, true},
 		{"cdn.evil.example", "8.8.8.8", ActionBlock, false},
-		{"example.com", "8.8.8.8", ActionDirect, false},            // default
-		{"registry-1.docker.io", "10.96.0.1", ActionDirect, false}, // bypass CIDR wins
+		{"example.com", "8.8.8.8", ActionDirect, false}, // default
 	}
 	for _, c := range cases {
 		dec := d.Decide(c.host, c.origIP)
@@ -192,12 +191,12 @@ func TestDeciderMitmDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := NewDecider(rs, true, nil) // mitm_default on
+	d := NewDecider(rs, true) // mitm_default on
 	dec := d.Decide("example.com", "8.8.8.8")
 	if !d.ShouldDecrypt(dec) {
 		t.Fatal("mitm_default=true must decrypt direct connections")
 	}
-	d2 := NewDecider(rs, false, nil)
+	d2 := NewDecider(rs, false)
 	if d2.ShouldDecrypt(d2.Decide("example.com", "8.8.8.8")) {
 		t.Fatal("mitm_default=false must not decrypt direct")
 	}

@@ -62,6 +62,12 @@ var defaultUpstreams = []upstreamDomain{
 	// Source mirrors: git smart-HTTP (git protocol) and Ivy repositories.
 	{Match: []string{"github.com", "codeload.github.com"}},
 	{Match: []string{"repo.scala-sbt.org", "scala.jfrog.io"}},
+	// Plain-HTTP package trees (Haskell, R, Perl, Lua) + Julia's package server.
+	{Match: []string{"hackage.haskell.org"}},
+	{Match: []string{"cran.r-project.org"}},
+	{Match: []string{"cpan.metacpan.org"}},
+	{Match: []string{"luarocks.org"}},
+	{Match: []string{"pkg.julialang.org", "*.pkg.julialang.org"}},
 }
 
 // DefaultRulesYAML renders the built-in rule set with the given gateway

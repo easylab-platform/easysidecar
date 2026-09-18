@@ -13,15 +13,15 @@ func run(cfg *Config) error {
 }
 
 // runProxy loads rules and serves every listener until one fails. The spoof
-// flag selects the no-netfilter mode (DNS + direct :443/:80 listeners) in
-// place of the REDIRECT listener.
+// flag selects the DNS-spoof interception mode (the resolver plus direct
+// :443/:80 listeners).
 func runProxy(cfg *Config) error {
 	rules, err := LoadRules(cfg.RulesFile)
 	if err != nil {
 		return err
 	}
 	logger := NewConnLogger()
-	decisions := NewDecider(rules, cfg.MitmDefault, cfg.BypassCIDRs)
+	decisions := NewDecider(rules, cfg.MitmDefault)
 
 	// MITM authority (nil when no CA configured: rewrite rules then fail
 	// closed with a clear error instead of silently bypassing policy).

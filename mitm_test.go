@@ -36,7 +36,7 @@ func TestRewriteHostPreserved(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = ln.Close() }()
-	go func() { _ = serveSpoofTLS(ln, NewDecider(mustRules(t, target), false, nil), mitm, NewConnLogger()) }()
+	go func() { _ = serveSpoofTLS(ln, NewDecider(mustRules(t, target), false), mitm, NewConnLogger()) }()
 
 	c := spoofTLS(t, ln.Addr().String(), "registry.npmjs.org", caPEM)
 	defer func() { _ = c.Close() }()

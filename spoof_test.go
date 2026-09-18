@@ -79,7 +79,7 @@ default: direct
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := NewDecider(rs, false, nil)
+	d := NewDecider(rs, false)
 	// A forwarder that returns a canned "real" answer for direct queries.
 	fwd := func(query []byte) []byte { return query } // echo (test only)
 	s := &SpoofDNS{SelfIP: "10.0.0.9", Decider: d, Logger: NewConnLogger(), UpstreamDNS: nil}
@@ -136,7 +136,7 @@ default: direct
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &SpoofDNS{SelfIP: "10.0.0.9", Decider: NewDecider(rs, false, nil), Logger: NewConnLogger(), UpstreamDNS: nil}
+	s := &SpoofDNS{SelfIP: "10.0.0.9", Decider: NewDecider(rs, false), Logger: NewConnLogger(), UpstreamDNS: nil}
 
 	for _, qt := range []uint16{dnsTypeAAAA, dnsTypeHTTPS, dnsTypeSVCB} {
 		resp := s.handle(buildQuery(t, "registry.npmjs.org", qt))
@@ -160,7 +160,7 @@ func TestSpoofDirectNODATA(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &SpoofDNS{SelfIP: "10.0.0.9", Decider: NewDecider(rs, true, nil), Logger: NewConnLogger()}
+	s := &SpoofDNS{SelfIP: "10.0.0.9", Decider: NewDecider(rs, true), Logger: NewConnLogger()}
 	resp := s.handle(buildQuery(t, "example.com", dnsTypeAAAA))
 	if resp == nil {
 		t.Fatal("no response")

@@ -1,9 +1,9 @@
 // Package easyproxy is a lightweight transparent egress proxy for EasyLab
-// workloads (CI builds, sandboxes, services). An init container installs
-// iptables rules that REDIRECT outbound TCP 80/443 (and UDP/53 DNS) into
-// easyproxy; easyproxy then classifies every connection by hostname — SNI for
-// TLS, Host header for plain HTTP, the original destination for the rest —
-// against a rule set and applies one of three actions:
+// workloads (CI builds, sandboxes, services). It needs no privilege: it is the
+// Pod's DNS authority (rewrite-matched names resolve to the sidecar) and its
+// :443/:80 listener, then classifies every connection by hostname — SNI for
+// TLS, Host header for plain HTTP — against a rule set and applies one of
+// three actions:
 //
 //	block   reset the connection immediately
 //	direct  splice the bytes through to the real destination (no decryption)
