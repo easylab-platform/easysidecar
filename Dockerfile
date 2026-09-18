@@ -6,9 +6,12 @@ COPY . .
 RUN CGO_ENABLED=0 go build -o /out/easysidecar ./cmd/easysidecar
 
 FROM ${REGISTRY}/alpine:3.24
+# iptables is needed only for the capture-mode init container; spoof mode does
+# not use netfilter at all.
+RUN apk add --no-cache iptables
 COPY --from=build /out/easysidecar /usr/local/bin/easysidecar
-# Spoof mode is the only interception mechanism: the sidecar answers DNS and
-# listens on :443/:80 directly. Port 53 needs root (or CAP_NET_BIND_SERVICE);
-# running as root keeps the image dependency-free.
+# Spoof mode binds :53; capture mode's init container installs iptables rules
+# and the sidecar stamps SO_MARK, both needing NET_ADMIN. Running as root keeps
+# the image dependency-free.
 USER root
 ENTRYPOINT ["/usr/local/bin/easysidecar"]

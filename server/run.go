@@ -5,6 +5,7 @@ import (
 	"net"
 	"strings"
 
+	"github.com/easylab-platform/easysidecar/capture"
 	"github.com/easylab-platform/easysidecar/dns"
 	"github.com/easylab-platform/easysidecar/logging"
 	"github.com/easylab-platform/easysidecar/mitm"
@@ -12,15 +13,38 @@ import (
 	"github.com/easylab-platform/easysidecar/rule"
 )
 
-// run loads the rule set and serves the listeners (spoof mode is the only
-// interception mechanism).
+// Run loads the rule set and serves the listeners for the configured mode.
 func Run(cfg *Config) error {
+	// The init-container role installs the netfilter rules and exits; it never
+	// serves traffic.
+	if cfg.Mode == ModeCapture && cfg.CaptureInit {
+		return runCaptureInit(cfg)
+	}
 	return runProxy(cfg)
 }
 
-// runProxy loads rules and serves every listener until one fails. The spoof
-// flag selects the DNS-spoof interception mode (the resolver plus direct
-// :443/:80 listeners).
+// runCaptureInit installs transparent-interception rules for the Pod and
+// returns. It runs once, as an init container with NET_ADMIN.
+func runCaptureInit(cfg *Config) error {
+	_, port, err := net.SplitHostPort(cfg.CaptureAddr)
+	if err != nil {
+		return fmt.Errorf("capture-init: bad -capture-addr %q: %w", cfg.CaptureAddr, err)
+	}
+	p, err := net.LookupPort("tcp", port)
+	if err != nil {
+		return fmt.Errorf("capture-init: bad port %q: %w", port, err)
+	}
+	if err := capture.Install(cfg.SelfIP, p, capture.Mark); err != nil {
+		return err
+	}
+	logging.NewConnLogger().Log(logging.ConnLogEntry{
+		Action: "info", Dst: fmt.Sprintf("capture-init: redirect tcp -> %s (mark 0x%x)", cfg.CaptureAddr, capture.Mark)})
+	return nil
+}
+
+// runProxy loads rules and serves every listener until one fails. cfg.Spoof
+// selects the DNS-spoof face; otherwise the privileged capture face is served
+// (the init container already installed the redirect).
 func runProxy(cfg *Config) error {
 	rules, err := rule.LoadRules(cfg.RulesFile)
 	if err != nil {
@@ -41,7 +65,9 @@ func runProxy(cfg *Config) error {
 		return fmt.Errorf("rules contain rewrite entries but no -ca-cert/-ca-key: rewrite requires MITM")
 	}
 
-	// Spoof is the only interception mode: DNS-based, no netfilter.
+	if cfg.Mode == ModeCapture {
+		return runCapture(cfg, decisions, m, logger)
+	}
 	return runSpoof(cfg, decisions, m, logger)
 }
 
@@ -65,6 +91,19 @@ func runSpoof(cfg *Config, decisions *rule.Decider, m *mitm.MITM, logger *loggin
 	go func() { errCh <- srv.Serve() }()
 	go func() { errCh <- tcp.Serve() }()
 	return <-errCh
+}
+
+// runCapture serves the all-port capture listener. The init container has
+// already pointed the Pod's outbound TCP at -capture-addr; each connection's
+// real destination arrives via SO_ORIGINAL_DST.
+func runCapture(cfg *Config, decisions *rule.Decider, m *mitm.MITM, logger *logging.ConnLogger) error {
+	tcp := &relay.CaptureTCP{
+		Addr: cfg.CaptureAddr, Decider: decisions, MITM: m,
+		UpstreamProxy: cfg.UpstreamProxy, Logger: logger, Mark: capture.Mark,
+	}
+	logger.Log(logging.ConnLogEntry{Action: "info", Dst: "capture mode: listen=" + cfg.CaptureAddr +
+		" egress-proxy=" + cfg.UpstreamProxy})
+	return tcp.Serve()
 }
 
 // withPort appends :53 when an upstream resolver is given as a bare IP.

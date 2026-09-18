@@ -2,6 +2,7 @@ package relay
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -130,34 +131,41 @@ func (s *SpoofTCP) handleTLS(c net.Conn) {
 // (direct) through the upstream proxy when configured. r replays the
 // classification-read bytes into the TLS server.
 func (s *SpoofTCP) mitmRelay(c net.Conn, r io.Reader, host string, e logging.ConnLogEntry) {
-	tlsCfg, err := s.MITM.TLSConfigFor(host)
+	mitmRelayConn(c, r, host, e, s.MITM, s.dialEgress, s.Logger)
+}
+
+// mitmRelayConn terminates the client TLS and re-originates to the real host
+// (direct) through the upstream proxy when configured. Shared by both faces.
+func mitmRelayConn(c net.Conn, r io.Reader, host string, e logging.ConnLogEntry, m *mitm.MITM,
+	dial func(string, logging.ConnLogEntry) (net.Conn, error), logger *logging.ConnLogger) {
+	tlsCfg, err := m.TLSConfigFor(host)
 	if err != nil {
 		e.Err = err.Error()
-		s.Logger.Log(e)
+		logger.Log(e)
 		_ = c.Close()
 		return
 	}
 	tlsSrv := tls.Server(bothReader{r, c}, tlsCfg)
 	if err := tlsSrv.Handshake(); err != nil {
 		e.Err = "client handshake: " + err.Error()
-		s.Logger.Log(e)
+		logger.Log(e)
 		_ = c.Close()
 		return
 	}
-	up, err := s.dialEgress(net.JoinHostPort(host, "443"), e)
+	up, err := dial(net.JoinHostPort(host, "443"), e)
 	if err != nil {
-		s.Logger.Log(e)
+		logger.Log(e)
 		_ = tlsSrv.Close()
 		return
 	}
 	tlsUp := tls.Client(up, &tls.Config{ServerName: host})
 	if err := tlsUp.Handshake(); err != nil {
 		e.Err = "upstream handshake: " + err.Error()
-		s.Logger.Log(e)
+		logger.Log(e)
 		_ = tlsSrv.Close()
 		return
 	}
-	_ = logging.Relay(tlsSrv, tlsUp, s.Logger, e)
+	_ = logging.Relay(tlsSrv, tlsUp, logger, e)
 }
 
 // rewriteRelay terminates the client TLS and proxies the decrypted HTTP
@@ -166,24 +174,40 @@ func (s *SpoofTCP) mitmRelay(c net.Conn, r io.Reader, host string, e logging.Con
 // (keep-alive) connection has its path mapped through the rule's strip/add
 // prefixes before forwarding; the original Host header is preserved.
 func (s *SpoofTCP) rewriteRelay(c net.Conn, r io.Reader, rl *rule.Rule, host string, e logging.ConnLogEntry) {
-	tlsCfg, err := s.MITM.TLSConfigFor(host)
+	rewriteRelayConn(c, r, rl, host, e, s.MITM, s.Logger)
+}
+
+// rewriteRelayConn terminates the client TLS and proxies the decrypted HTTP
+// traffic to the rule target. Shared by both faces; origScheme is always
+// https here (the capture face reaches plain HTTP through handleCapturedHTTP).
+func rewriteRelayConn(c net.Conn, r io.Reader, rl *rule.Rule, host string, e logging.ConnLogEntry,
+	m *mitm.MITM, logger *logging.ConnLogger) {
+	rewriteRelayConnDial(c, r, rl, host, e, m, logger, nil)
+}
+
+// rewriteRelayConnDial is rewriteRelayConn with an optional transport dialer
+// (the capture face supplies a marked dialer).
+func rewriteRelayConnDial(c net.Conn, r io.Reader, rl *rule.Rule, host string, e logging.ConnLogEntry,
+	m *mitm.MITM, logger *logging.ConnLogger,
+	dialCtx func(ctx context.Context, network, addr string) (net.Conn, error)) {
+	tlsCfg, err := m.TLSConfigFor(host)
 	if err != nil {
 		e.Err = err.Error()
-		s.Logger.Log(e)
+		logger.Log(e)
 		_ = c.Close()
 		return
 	}
 	tlsSrv := tls.Server(bothReader{r, c}, tlsCfg)
 	if err := tlsSrv.Handshake(); err != nil {
 		e.Err = "client handshake: " + err.Error()
-		s.Logger.Log(e)
+		logger.Log(e)
 		_ = c.Close()
 		return
 	}
 	defer func() { _ = tlsSrv.Close() }()
-	if err := s.serveRewritten(tlsSrv, rl, host, "https"); err != nil {
+	if err := serveRewrittenConn(tlsSrv, buildRewriteProxy(rl, host, "https", dialCtx)); err != nil {
 		e.Err = err.Error()
-		s.Logger.Log(e)
+		logger.Log(e)
 	}
 }
 
@@ -203,8 +227,19 @@ func (s *SpoofTCP) rewriteRelay(c net.Conn, r io.Reader, rl *rule.Rule, host str
 // (see artifactkit's host allow-list), so a hostile client cannot point the
 // mirror at an arbitrary origin.
 func (s *SpoofTCP) rewriteProxy(rl *rule.Rule, host, origScheme string) *httputil.ReverseProxy {
+	return buildRewriteProxy(rl, host, origScheme, nil)
+}
+
+// buildRewriteProxy is the shared implementation behind both faces' rewrite
+// proxies. dialCtx is the transport dialer (nil uses net/http's default); the
+// capture face passes a SO_MARK-stamping dialer so the proxy's own upstream
+// dials are not redirected back into the sidecar.
+func buildRewriteProxy(rl *rule.Rule, host, origScheme string, dialCtx func(ctx context.Context, network, addr string) (net.Conn, error)) *httputil.ReverseProxy {
 	scheme, addr := parseTarget(rl.Target)
 	transport := &http.Transport{}
+	if dialCtx != nil {
+		transport.DialContext = dialCtx
+	}
 	if scheme == "https" {
 		transport.TLSClientConfig = &tls.Config{ServerName: hostOf(addr)}
 	}
@@ -239,7 +274,14 @@ func (s *SpoofTCP) rewriteProxy(rl *rule.Rule, host, origScheme string) *httputi
 // *http.Server only speaks HTTP/1.1, so h2 connections are handed to an
 // http2.Server and everyone else keeps the HTTP/1.1 path.
 func (s *SpoofTCP) serveRewritten(conn net.Conn, rl *rule.Rule, host, origScheme string) error {
-	rp := s.rewriteProxy(rl, host, origScheme)
+	return serveRewrittenConn(conn, s.rewriteProxy(rl, host, origScheme))
+}
+
+// serveRewrittenConn runs a reverse proxy over one already-established
+// connection. The TLS face may negotiate h2 (gRPC/Connect clients require
+// it); an *http.Server only speaks HTTP/1.1, so h2 connections are handed to
+// an http2.Server and everyone else keeps the HTTP/1.1 path.
+func serveRewrittenConn(conn net.Conn, rp *httputil.ReverseProxy) error {
 	if tc, ok := conn.(*tls.Conn); ok {
 		if tc.ConnectionState().NegotiatedProtocol == "h2" {
 			h2 := &http2.Server{}

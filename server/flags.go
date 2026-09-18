@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/easylab-platform/easysidecar/relay"
 )
@@ -16,6 +17,12 @@ type Mode string
 
 const (
 	ModeProxy Mode = "proxy"
+	// ModeCapture is the privileged all-port face: an init container installs
+	// iptables rules that REDIRECT/DNAT the Pod's outbound TCP to -capture-addr,
+	// and the sidecar recovers the real destination via SO_ORIGINAL_DST. It is
+	// the same process as proxy mode plus a capture listener; DNS is NOT
+	// intercepted (the workload keeps the cluster resolver).
+	ModeCapture Mode = "capture"
 )
 
 // Config is the assembled runtime configuration.
@@ -49,6 +56,16 @@ type Config struct {
 	UpstreamProxy string
 	// Spoof listen addresses.
 	SpoofDNSAddr, SpoofTLSAddr, SpoofHTTPAddr string
+
+	// Capture mode: listen for iptables-redirected TCP and recover the real
+	// destination from SO_ORIGINAL_DST. CaptureAddr is the high port the init
+	// container's rules target (default 0.0.0.0:15001).
+	CaptureAddr string
+	// CaptureInit, when true, installs the iptables rules and exits (the init
+	// container role). Requires NET_ADMIN.
+	CaptureInit bool
+	// CaptureUIDs exempts these UIDs from redirection (the sidecar itself).
+	CaptureUIDs []string
 }
 
 func ParseFlags() (*Config, error) {
@@ -65,18 +82,30 @@ func ParseFlags() (*Config, error) {
 	flag.StringVar(&cfg.SpoofDNSAddr, "spoof-dns-addr", "0.0.0.0:53", "spoof mode: DNS listen address")
 	flag.StringVar(&cfg.SpoofTLSAddr, "spoof-tls-addr", "0.0.0.0:443", "spoof mode: TLS listen address")
 	flag.StringVar(&cfg.SpoofHTTPAddr, "spoof-http-addr", "0.0.0.0:80", "spoof mode: plain-HTTP listen address")
+	flag.StringVar(&cfg.CaptureAddr, "capture-addr", "0.0.0.0:15001", "capture mode: listen address for redirected TCP")
+	flag.BoolVar(&cfg.CaptureInit, "capture-init", false, "capture mode: install iptables rules and exit (init container role)")
+	uids := flag.String("capture-uids", "", "capture mode: comma-separated UIDs exempt from redirection (default: the sidecar's own UID)")
 	flag.Parse()
+	cfg.CaptureUIDs = splitCSV(*uids)
 
 	if cfg.Mode == "" {
 		cfg.Mode = ModeProxy
 	}
+	// The upstream proxy is configured as an HTTP URL; the dialers want
+	// host:port. Normalize once here so every face agrees.
+	cfg.UpstreamProxy = hostPort(cfg.UpstreamProxy)
 	switch cfg.Mode {
-	case ModeProxy:
-		if cfg.RulesFile == "" {
-			return nil, fmt.Errorf("proxy mode requires -rules")
+	case ModeProxy, ModeCapture:
+		if cfg.Mode == ModeCapture && cfg.CaptureInit {
+			// The init container only installs the netfilter redirect; it
+			// needs neither a rule set nor DNS/self-IP.
+			return cfg, nil
 		}
-		if cfg.Spoof {
-			if cfg.UpstreamDNS == "" {
+		if cfg.RulesFile == "" {
+			return nil, fmt.Errorf("%s mode requires -rules", cfg.Mode)
+		}
+		if cfg.Spoof || cfg.Mode == ModeCapture {
+			if cfg.Spoof && cfg.UpstreamDNS == "" {
 				return nil, fmt.Errorf("spoof mode requires -upstream-dns")
 			}
 			if cfg.SelfIP == "" {
@@ -91,9 +120,34 @@ func ParseFlags() (*Config, error) {
 			}
 		}
 	default:
-		return nil, fmt.Errorf("unknown mode %q (proxy)", string(cfg.Mode))
+		return nil, fmt.Errorf("unknown mode %q (proxy|capture)", string(cfg.Mode))
 	}
 	return cfg, nil
+}
+
+// hostPort strips an http(s):// scheme from a proxy URL, leaving host:port.
+func hostPort(s string) string {
+	if s == "" {
+		return ""
+	}
+	if rest, ok := strings.CutPrefix(s, "http://"); ok {
+		return strings.TrimSuffix(rest, "/")
+	}
+	if rest, ok := strings.CutPrefix(s, "https://"); ok {
+		return strings.TrimSuffix(rest, "/")
+	}
+	return strings.TrimSuffix(s, "/")
+}
+
+// splitCSV trims and drops empties from a comma-separated flag value.
+func splitCSV(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // modeFlag adapts Mode to flag.Value.
@@ -103,9 +157,9 @@ func (m *modeFlag) String() string { return string(*m) }
 
 func (m *modeFlag) Set(s string) error {
 	switch Mode(s) {
-	case ModeProxy:
+	case ModeProxy, ModeCapture:
 		*m = modeFlag(Mode(s))
 		return nil
 	}
-	return fmt.Errorf("invalid mode %q (proxy)", s)
+	return fmt.Errorf("invalid mode %q (proxy|capture)", s)
 }
