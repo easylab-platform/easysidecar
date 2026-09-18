@@ -1,9 +1,11 @@
-package main
+package server
 
 import (
 	"flag"
 	"fmt"
 	"os"
+
+	"github.com/easylab-platform/easysidecar/relay"
 )
 
 // Mode selects the process role. Today there is exactly one: the long-running
@@ -49,7 +51,7 @@ type Config struct {
 	SpoofDNSAddr, SpoofTLSAddr, SpoofHTTPAddr string
 }
 
-func parseFlags() (*Config, error) {
+func ParseFlags() (*Config, error) {
 	cfg := &Config{}
 	flag.Var((*modeFlag)(&cfg.Mode), "mode", "process role: proxy (default)")
 	flag.StringVar(&cfg.RulesFile, "rules", "", "YAML rule set file")
@@ -81,7 +83,7 @@ func parseFlags() (*Config, error) {
 				cfg.SelfIP = os.Getenv("POD_IP")
 			}
 			if cfg.SelfIP == "" {
-				ip, err := firstNonLoopbackIPv4()
+				ip, err := relay.FirstNonLoopbackIPv4()
 				if err != nil {
 					return nil, fmt.Errorf("spoof mode: cannot determine self IP: %w", err)
 				}

@@ -1,4 +1,4 @@
-package main
+package rule
 
 import (
 	"fmt"
@@ -77,7 +77,7 @@ var defaultUpstreams = []upstreamDomain{
 // prefixes and the relay preserves the upstream path shape.
 func DefaultRulesYAML(gatewayHostPort string) string {
 	var b strings.Builder
-	b.WriteString("# easyproxy default egress policy: package-manager upstreams are\n")
+	b.WriteString("# easysidecar default egress policy: package-manager upstreams are\n")
 	b.WriteString("# steered into easylab's pull-through registry; everything else is direct.\n")
 	b.WriteString("rules:\n")
 	for _, u := range defaultUpstreams {
@@ -103,7 +103,7 @@ func quoteList(items []string) string {
 func HasUpstreamDomain(host string) bool {
 	for _, u := range defaultUpstreams {
 		for _, m := range u.Match {
-			if matchHost(m, host) {
+			if MatchHost(m, host) {
 				return true
 			}
 		}

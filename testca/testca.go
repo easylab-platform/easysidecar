@@ -1,4 +1,7 @@
-package main
+// Package testca mints throwaway certificate authorities for tests. It is
+// imported only from _test.go files; nothing in the sidecar binary depends on
+// it.
+package testca
 
 import (
 	"crypto/rand"
@@ -7,30 +10,18 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"math/big"
-	"os"
 	"time"
 )
 
-func writePEM(path, blockType string, der []byte) error {
-	return os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: blockType, Bytes: der}), 0o600)
-}
-
-func writePEMKey(path string, key *rsa.PrivateKey) error {
-	return os.WriteFile(path, pem.EncodeToMemory(&pem.Block{
-		Type:  "RSA PRIVATE KEY",
-		Bytes: x509.MarshalPKCS1PrivateKey(key),
-	}), 0o600)
-}
-
-// mintTestCA creates a CA and returns (certPEM, keyPEM).
-func mintTestCA() ([]byte, []byte, error) {
+// Mint returns a self-signed CA as (certPEM, keyPEM).
+func Mint() ([]byte, []byte, error) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		return nil, nil, err
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber:          big.NewInt(2),
-		Subject:               pkix.Name{CommonName: "easyproxy-e2e-ca"},
+		Subject:               pkix.Name{CommonName: "easysidecar-test-ca"},
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().Add(time.Hour),
 		IsCA:                  true,

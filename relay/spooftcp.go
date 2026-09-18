@@ -1,4 +1,4 @@
-package main
+package relay
 
 import (
 	"bytes"
@@ -14,6 +14,10 @@ import (
 	"time"
 
 	"golang.org/x/net/http2"
+
+	"github.com/easylab-platform/easysidecar/logging"
+	"github.com/easylab-platform/easysidecar/mitm"
+	"github.com/easylab-platform/easysidecar/rule"
 )
 
 // This file implements the spoof-mode TCP faces: the sidecar listens directly
@@ -25,10 +29,10 @@ import (
 type SpoofTCP struct {
 	TLSAddr       string
 	HTTPAddr      string
-	Decider       *Decider
-	MITM          *MITM
+	Decider       *rule.Decider
+	MITM          *mitm.MITM
 	UpstreamProxy string // optional HTTP proxy for DIRECT egress (mihomo)
-	Logger        *ConnLogger
+	Logger        *logging.ConnLogger
 }
 
 // Serve starts both listeners; it blocks until one fails.
@@ -48,7 +52,7 @@ func (s *SpoofTCP) serveTLS() error {
 	if err != nil {
 		return fmt.Errorf("spoof tls listen %s: %w", s.TLSAddr, err)
 	}
-	s.Logger.Log(ConnLogEntry{Action: "info", Dst: "listening spoof-tls " + s.TLSAddr})
+	s.Logger.Log(logging.ConnLogEntry{Action: "info", Dst: "listening spoof-tls " + s.TLSAddr})
 	for {
 		c, err := ln.Accept()
 		if err != nil {
@@ -63,7 +67,7 @@ func (s *SpoofTCP) serveHTTP() error {
 	if err != nil {
 		return fmt.Errorf("spoof http listen %s: %w", s.HTTPAddr, err)
 	}
-	s.Logger.Log(ConnLogEntry{Action: "info", Dst: "listening spoof-http " + s.HTTPAddr})
+	s.Logger.Log(logging.ConnLogEntry{Action: "info", Dst: "listening spoof-http " + s.HTTPAddr})
 	for {
 		c, err := ln.Accept()
 		if err != nil {
@@ -77,22 +81,22 @@ func (s *SpoofTCP) serveHTTP() error {
 func (s *SpoofTCP) handleTLS(c net.Conn) {
 	host, tr, err := classifyHost(c)
 	if err != nil && err != io.EOF {
-		s.Logger.Log(ConnLogEntry{Action: "error", Dst: c.RemoteAddr().String(), Err: err.Error()})
+		s.Logger.Log(logging.ConnLogEntry{Action: "error", Dst: c.RemoteAddr().String(), Err: err.Error()})
 		_ = c.Close()
 		return
 	}
 	dec := s.Decider.Decide(host, "")
-	e := ConnLogEntry{Host: host, Dst: c.RemoteAddr().String()}
+	e := logging.ConnLogEntry{Host: host, Dst: c.RemoteAddr().String()}
 
 	switch dec.Action {
-	case ActionBlock:
+	case rule.ActionBlock:
 		e.Action = "block"
 		e.Rule = firstMatch(dec)
 		s.Logger.Log(e)
 		resetConn(c)
 		return
 
-	case ActionRewrite:
+	case rule.ActionRewrite:
 		if s.MITM == nil {
 			e.Action = "rewrite-denied"
 			e.Err = "no CA configured"
@@ -109,7 +113,7 @@ func (s *SpoofTCP) handleTLS(c net.Conn) {
 		s.Logger.Log(e)
 		s.rewriteRelay(c, tr.replay(), dec.Rule, host, e)
 
-	case ActionDirect:
+	case rule.ActionDirect:
 		if s.Decider.ShouldDecrypt(dec) && s.MITM != nil {
 			e.Action = "mitm-direct"
 			e.Mitm = true
@@ -125,7 +129,7 @@ func (s *SpoofTCP) handleTLS(c net.Conn) {
 // mitmRelay terminates the client TLS and re-originates to the real host
 // (direct) through the upstream proxy when configured. r replays the
 // classification-read bytes into the TLS server.
-func (s *SpoofTCP) mitmRelay(c net.Conn, r io.Reader, host string, e ConnLogEntry) {
+func (s *SpoofTCP) mitmRelay(c net.Conn, r io.Reader, host string, e logging.ConnLogEntry) {
 	tlsCfg, err := s.MITM.TLSConfigFor(host)
 	if err != nil {
 		e.Err = err.Error()
@@ -153,7 +157,7 @@ func (s *SpoofTCP) mitmRelay(c net.Conn, r io.Reader, host string, e ConnLogEntr
 		_ = tlsSrv.Close()
 		return
 	}
-	_ = relay(tlsSrv, tlsUp, s.Logger, e)
+	_ = logging.Relay(tlsSrv, tlsUp, s.Logger, e)
 }
 
 // rewriteRelay terminates the client TLS and proxies the decrypted HTTP
@@ -161,7 +165,7 @@ func (s *SpoofTCP) mitmRelay(c net.Conn, r io.Reader, host string, e ConnLogEntr
 // the cluster). r replays the classification-read bytes. Every request on the
 // (keep-alive) connection has its path mapped through the rule's strip/add
 // prefixes before forwarding; the original Host header is preserved.
-func (s *SpoofTCP) rewriteRelay(c net.Conn, r io.Reader, rule *Rule, host string, e ConnLogEntry) {
+func (s *SpoofTCP) rewriteRelay(c net.Conn, r io.Reader, rl *rule.Rule, host string, e logging.ConnLogEntry) {
 	tlsCfg, err := s.MITM.TLSConfigFor(host)
 	if err != nil {
 		e.Err = err.Error()
@@ -177,7 +181,7 @@ func (s *SpoofTCP) rewriteRelay(c net.Conn, r io.Reader, rule *Rule, host string
 		return
 	}
 	defer func() { _ = tlsSrv.Close() }()
-	if err := s.serveRewritten(tlsSrv, rule, host, "https"); err != nil {
+	if err := s.serveRewritten(tlsSrv, rl, host, "https"); err != nil {
 		e.Err = err.Error()
 		s.Logger.Log(e)
 	}
@@ -198,8 +202,8 @@ func (s *SpoofTCP) rewriteRelay(c net.Conn, r io.Reader, rule *Rule, host string
 // They are advisory: the gateway only honors them for hosts it already knows
 // (see artifactkit's host allow-list), so a hostile client cannot point the
 // mirror at an arbitrary origin.
-func (s *SpoofTCP) rewriteProxy(rule *Rule, host, origScheme string) *httputil.ReverseProxy {
-	scheme, addr := parseTarget(rule.Target)
+func (s *SpoofTCP) rewriteProxy(rl *rule.Rule, host, origScheme string) *httputil.ReverseProxy {
+	scheme, addr := parseTarget(rl.Target)
 	transport := &http.Transport{}
 	if scheme == "https" {
 		transport.TLSClientConfig = &tls.Config{ServerName: hostOf(addr)}
@@ -209,12 +213,12 @@ func (s *SpoofTCP) rewriteProxy(rule *Rule, host, origScheme string) *httputil.R
 		Director: func(req *http.Request) {
 			req.URL.Scheme = scheme
 			req.URL.Host = addr
-			req.URL.Path = rule.MapPath(req.URL.Path)
+			req.URL.Path = rl.MapPath(req.URL.Path)
 			req.Host = host // preserve the upstream's Host for adapter routing
 			req.Header.Set("X-Forwarded-Host", host)
 			req.Header.Set("X-Forwarded-Proto", origScheme)
-			if rule.StripPrefix != "" {
-				req.Header.Set("X-Forwarded-Prefix", rule.StripPrefix)
+			if rl.StripPrefix != "" {
+				req.Header.Set("X-Forwarded-Prefix", rl.StripPrefix)
 			} else {
 				req.Header.Del("X-Forwarded-Prefix")
 			}
@@ -234,8 +238,8 @@ func (s *SpoofTCP) rewriteProxy(rule *Rule, host, origScheme string) *httputil.R
 // The TLS face may negotiate h2 (gRPC/Connect clients require it); an
 // *http.Server only speaks HTTP/1.1, so h2 connections are handed to an
 // http2.Server and everyone else keeps the HTTP/1.1 path.
-func (s *SpoofTCP) serveRewritten(conn net.Conn, rule *Rule, host, origScheme string) error {
-	rp := s.rewriteProxy(rule, host, origScheme)
+func (s *SpoofTCP) serveRewritten(conn net.Conn, rl *rule.Rule, host, origScheme string) error {
+	rp := s.rewriteProxy(rl, host, origScheme)
 	if tc, ok := conn.(*tls.Conn); ok {
 		if tc.ConnectionState().NegotiatedProtocol == "h2" {
 			h2 := &http2.Server{}
@@ -280,7 +284,7 @@ func (l *singleConnListener) Close() error {
 	return nil
 }
 
-func (l *singleConnListener) Addr() net.Addr { return dummyAddr("easyproxy") }
+func (l *singleConnListener) Addr() net.Addr { return dummyAddr("easysidecar") }
 
 // notifyCloseConn signals its listener when net/http closes the connection.
 type notifyCloseConn struct {
@@ -316,7 +320,7 @@ func hostOf(addr string) string {
 }
 
 // mustDial is a bounded dial whose failure is logged via the entry.
-func mustDial(addr string, e ConnLogEntry, logger *ConnLogger) net.Conn {
+func mustDial(addr string, e logging.ConnLogEntry, logger *logging.ConnLogger) net.Conn {
 	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
 	if err != nil {
 		e.Err = err.Error()
@@ -341,7 +345,7 @@ func (errConn) SetWriteDeadline(time.Time) error { return nil }
 
 // passthrough splices an un-decrypted TLS stream to the real host (or via the
 // upstream proxy when configured).
-func (s *SpoofTCP) passthrough(c net.Conn, host string, tr *tlsReader, e ConnLogEntry) {
+func (s *SpoofTCP) passthrough(c net.Conn, host string, tr *tlsReader, e logging.ConnLogEntry) {
 	up, err := s.dialEgress(net.JoinHostPort(host, "443"), e)
 	if err != nil {
 		s.Logger.Log(e)
@@ -356,12 +360,12 @@ func (s *SpoofTCP) passthrough(c net.Conn, host string, tr *tlsReader, e ConnLog
 			return
 		}
 	}
-	_ = relay(c, up, s.Logger, e)
+	_ = logging.Relay(c, up, s.Logger, e)
 }
 
 // dialEgress dials the target directly, or via the configured upstream HTTP
 // proxy (mihomo) using CONNECT so the cluster's egress policy still applies.
-func (s *SpoofTCP) dialEgress(addr string, e ConnLogEntry) (net.Conn, error) {
+func (s *SpoofTCP) dialEgress(addr string, e logging.ConnLogEntry) (net.Conn, error) {
 	if s.UpstreamProxy == "" {
 		conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
 		if err != nil {
@@ -406,12 +410,12 @@ func (s *SpoofTCP) handleHTTP(c net.Conn) {
 		return
 	}
 	dec := s.Decider.Decide(host, "")
-	e := ConnLogEntry{Host: host, Dst: c.RemoteAddr().String(), Action: string(dec.Action)}
+	e := logging.ConnLogEntry{Host: host, Dst: c.RemoteAddr().String(), Action: string(dec.Action)}
 	switch dec.Action {
-	case ActionBlock:
+	case rule.ActionBlock:
 		s.Logger.Log(e)
 		resetConn(c)
-	case ActionRewrite:
+	case rule.ActionRewrite:
 		// Run a full HTTP/1.1 proxy over the (plain) connection so every
 		// request on a keep-alive connection gets its path mapped. The head
 		// already consumed by readHost is replayed ahead of the rest.
@@ -421,9 +425,9 @@ func (s *SpoofTCP) handleHTTP(c net.Conn) {
 		s.Logger.Log(e)
 		replay := io.MultiReader(bytes.NewReader(br.buf), br.br)
 		if err := s.serveRewritten(&bufferedConn{Conn: c, r: replay}, dec.Rule, host, "http"); err != nil {
-			s.Logger.Log(ConnLogEntry{Host: host, Dst: e.Dst, Action: "rewrite", Err: err.Error()})
+			s.Logger.Log(logging.ConnLogEntry{Host: host, Dst: e.Dst, Action: "rewrite", Err: err.Error()})
 		}
-	case ActionDirect:
+	case rule.ActionDirect:
 		up, err := s.dialEgress(net.JoinHostPort(host, "80"), e)
 		if err != nil {
 			s.Logger.Log(e)
@@ -433,24 +437,24 @@ func (s *SpoofTCP) handleHTTP(c net.Conn) {
 		if _, err := up.Write(br.bufferedAll()); err != nil {
 			return
 		}
-		_ = relay(c, up, s.Logger, e)
+		_ = logging.Relay(c, up, s.Logger, e)
 	}
 }
 
 // serveSpoofTLS is a test/DI seam: run the TLS face on a prepared listener.
-func serveSpoofTLS(ln net.Listener, d *Decider, mitm *MITM, logger *ConnLogger) error {
+func serveSpoofTLS(ln net.Listener, d *rule.Decider, m *mitm.MITM, logger *logging.ConnLogger) error {
 	for {
 		c, err := ln.Accept()
 		if err != nil {
 			return err
 		}
-		go handleSpoofTLSConn(c, d, mitm, logger)
+		go handleSpoofTLSConn(c, d, m, logger)
 	}
 }
 
 // handleSpoofTLSConn is the test/DI seam for one spoof-TLS connection.
-func handleSpoofTLSConn(c net.Conn, d *Decider, mitm *MITM, logger *ConnLogger) {
-	s := &SpoofTCP{Decider: d, MITM: mitm, Logger: logger}
+func handleSpoofTLSConn(c net.Conn, d *rule.Decider, m *mitm.MITM, logger *logging.ConnLogger) {
+	s := &SpoofTCP{Decider: d, MITM: m, Logger: logger}
 	s.handleTLS(c)
 }
 

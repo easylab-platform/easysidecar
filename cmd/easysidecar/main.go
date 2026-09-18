@@ -1,4 +1,4 @@
-// Package easyproxy is a lightweight transparent egress proxy for EasyLab
+// Command easysidecar is a lightweight transparent egress proxy for EasyLab
 // workloads (CI builds, sandboxes, services). It needs no privilege: it is the
 // Pod's DNS authority (rewrite-matched names resolve to the sidecar) and its
 // :443/:80 listener, then classifies every connection by hostname — SNI for
@@ -10,20 +10,24 @@
 //	rewrite decrypt (MITM, when the rule opts in) and forward to an EasyLab
 //	        pull-through endpoint instead of the original destination
 //
-// easyproxy is NOT a general-purpose proxy: it is the enforcement point for
+// easysidecar is NOT a general-purpose proxy: it is the enforcement point for
 // workload egress policy (blocklist, force-through-internal-registry), kept
 // intentionally small and auditable.
 package main
 
-import "log"
+import (
+	"log"
+
+	"github.com/easylab-platform/easysidecar/server"
+)
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.LUTC)
-	cfg, err := parseFlags()
+	cfg, err := server.ParseFlags()
 	if err != nil {
-		log.Fatalf("easyproxy: %v", err)
+		log.Fatalf("easysidecar: %v", err)
 	}
-	if err := run(cfg); err != nil {
-		log.Fatalf("easyproxy: %v", err)
+	if err := server.Run(cfg); err != nil {
+		log.Fatalf("easysidecar: %v", err)
 	}
 }

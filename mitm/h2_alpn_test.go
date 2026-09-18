@@ -1,4 +1,4 @@
-package main
+package mitm
 
 import (
 	"crypto/rand"
@@ -19,7 +19,7 @@ func TestH2ALPNAdvertised(t *testing.T) {
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber:          big.NewInt(1),
-		Subject:               pkix.Name{CommonName: "easyproxy-test-ca"},
+		Subject:               pkix.Name{CommonName: "easysidecar-test-ca"},
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().Add(time.Hour),
 		IsCA:                  true,

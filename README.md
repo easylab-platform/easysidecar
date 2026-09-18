@@ -1,4 +1,4 @@
-# easyproxy
+# easysidecar
 
 A lightweight transparent egress proxy for EasyLab workloads (CI builds,
 sandboxes, services). It intercepts a Pod's outbound traffic **without any
@@ -14,6 +14,19 @@ Pod's DNS authority and TLS endpoint:
 
 The workload sees the real upstream hostnames and unmodified URLs, so an
 unmodified `npm`/`pip`/`docker`/... reaches the mirror with no configuration.
+
+## Layout
+
+| package | responsibility |
+|---|---|
+| `cmd/easysidecar` | process entrypoint (`--mode=proxy`) |
+| `server/` | flag parsing + listener wiring |
+| `rule/` | rule model, matching, decider, built-in default policy |
+| `dns/` | DNS-spoof resolver (`:53`, spoofed A / NODATA / NXDOMAIN) |
+| `relay/` | :443/:80 faces, SNI/Host classification, MITM relays, raw splice |
+| `mitm/` | CA loading + per-host leaf issuance |
+| `logging/` | JSON connection audit log + byte relay |
+| `testca/` | throwaway CAs for tests (test-only import) |
 
 ## Rules
 
@@ -50,7 +63,7 @@ the gateway can reconstruct the real upstream without a per-ecosystem table.
 ## MITM
 
 Rewrite rules require a CA (`-ca-cert`/`-ca-key`, injected from a K8s Secret
-scoped to the namespace): easyproxy terminates the client TLS with a per-host
+scoped to the namespace): easysidecar terminates the client TLS with a per-host
 leaf certificate and connects to the pull-through target. Workloads trust the
 CA via `SSL_CERT_FILE` (Go) / `NODE_EXTRA_CA_CERTS` (Node) env, which the k8s
 injection sets.
@@ -70,7 +83,7 @@ the proxy a full plaintext chokepoint).
 ## Build
 
 ```
-CGO_ENABLED=0 go build -o easyproxy .
+CGO_ENABLED=0 go build -o easysidecar ./cmd/easysidecar
 ```
 
 Licensed under MIT.

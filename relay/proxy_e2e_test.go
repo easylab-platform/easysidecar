@@ -1,4 +1,4 @@
-package main
+package relay
 
 import (
 	"bufio"
@@ -13,12 +13,17 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/easylab-platform/easysidecar/logging"
+	"github.com/easylab-platform/easysidecar/mitm"
+	"github.com/easylab-platform/easysidecar/rule"
+	"github.com/easylab-platform/easysidecar/testca"
 )
 
 // e2e for the spoof TLS face: the listener IS the TLS server. The client
-// connects with SNI, easyproxy classifies (rewrite → MITM to the rule
+// connects with SNI, easysidecar classifies (rewrite → MITM to the rule
 // target, direct → passthrough, block → RST) and the client trusts the
-// easyproxy CA (mirroring the injected SSL_CERT_FILE / NODE_EXTRA_CA_CERTS).
+// easysidecar CA (mirroring the injected SSL_CERT_FILE / NODE_EXTRA_CA_CERTS).
 
 type e2eFixture struct {
 	caPEM   []byte
@@ -55,12 +60,12 @@ default: direct
 	if err := os.WriteFile(p, []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	rs, err := LoadRules(p)
+	rs, err := rule.LoadRules(p)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	caPEM, keyPEM, err := mintTestCA()
+	caPEM, keyPEM, err := testca.Mint()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,19 +76,19 @@ default: direct
 	if err := os.WriteFile(filepath.Join(dir, "ca.key"), keyPEM, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	mitm, err := LoadMITM(filepath.Join(dir, "ca.crt"), filepath.Join(dir, "ca.key"))
+	mitm, err := mitm.LoadMITM(filepath.Join(dir, "ca.crt"), filepath.Join(dir, "ca.key"))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	dec := NewDecider(rs, false)
+	dec := rule.NewDecider(rs, false)
 	proxyLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	proxyAddr := proxyLn.Addr().String()
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- serveSpoofTLS(proxyLn, dec, mitm, NewConnLogger()) }()
+	go func() { serveErr <- serveSpoofTLS(proxyLn, dec, mitm, logging.NewConnLogger()) }()
 	t.Cleanup(func() { _ = proxyLn.Close() })
 	go func() {
 		if e := <-serveErr; e != nil && !strings.Contains(e.Error(), "use of closed network connection") {
@@ -111,7 +116,7 @@ func cutStrPrefix(s, p string) (string, bool) {
 }
 
 // spoofTLS connects to the spoof listener and performs the client TLS
-// handshake with SNI=host, trusting the easyproxy CA (the injected
+// handshake with SNI=host, trusting the easysidecar CA (the injected
 // SSL_CERT_FILE equivalent).
 func spoofTLS(t *testing.T, proxyAddr, host string, caPEM []byte) net.Conn {
 	t.Helper()

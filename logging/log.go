@@ -1,4 +1,4 @@
-package main
+package logging
 
 import (
 	"crypto/tls"
@@ -43,9 +43,9 @@ func (l *ConnLogger) Log(e ConnLogEntry) {
 	_ = l.w.Encode(e)
 }
 
-// relay copies both directions of an established connection, counting the
+// Relay copies both directions of an established connection, counting the
 // bytes pushed downstream. It returns the copy error (if any).
-func relay(down, up net.Conn, l *ConnLogger, e ConnLogEntry) error {
+func Relay(down, up net.Conn, l *ConnLogger, e ConnLogEntry) error {
 	done := make(chan error, 2)
 	go func() {
 		n, err := copyOne(up, down)
@@ -68,13 +68,13 @@ func relay(down, up net.Conn, l *ConnLogger, e ConnLogEntry) error {
 	if err1 != nil {
 		e.Err = err1.Error()
 	} else {
-		e.Err = errErr2String(err2)
+		e.Err = ErrString(err2)
 	}
 	l.Log(e)
 	return err1
 }
 
-func errErr2String(err error) string {
+func ErrString(err error) string {
 	if err != nil {
 		return err.Error()
 	}

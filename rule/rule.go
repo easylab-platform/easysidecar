@@ -1,4 +1,4 @@
-package main
+package rule
 
 import (
 	"fmt"
@@ -125,7 +125,7 @@ func (rs *RuleSet) HasRewrite() bool {
 // ("registry.npmjs.org"), suffix wildcards ("*.npmjs.org"), or bare suffixes
 // ("npmjs.org" matches npmjs.org and anything under it). Matching ignores
 // case and a trailing dot.
-func matchHost(pattern, host string) bool {
+func MatchHost(pattern, host string) bool {
 	pattern = strings.ToLower(strings.TrimSuffix(pattern, "."))
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
 	if pattern == host {
@@ -167,7 +167,7 @@ func (d *Decider) Decide(host, origDstIP string) Decision {
 	for i := range d.rs.Rules {
 		r := &d.rs.Rules[i]
 		for _, m := range r.Match {
-			if matchHost(m, host) {
+			if MatchHost(m, host) {
 				return Decision{Action: r.Action, Rule: r, Host: host}
 			}
 		}

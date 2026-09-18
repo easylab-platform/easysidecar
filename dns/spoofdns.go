@@ -1,4 +1,4 @@
-package main
+package dns
 
 import (
 	"encoding/binary"
@@ -6,6 +6,9 @@ import (
 	"net"
 	"strings"
 	"time"
+
+	"github.com/easylab-platform/easysidecar/logging"
+	"github.com/easylab-platform/easysidecar/rule"
 )
 
 // This file implements the dns-spoof interception mode: no iptables, no tun,
@@ -27,8 +30,8 @@ type SpoofDNS struct {
 	Addr        string
 	SelfIP      string
 	UpstreamDNS []string
-	Decider     *Decider
-	Logger      *ConnLogger
+	Decider     *rule.Decider
+	Logger      *logging.ConnLogger
 }
 
 // ServeDNS listens on UDP and TCP :53 (DNS over UDP plus TCP fallback for
@@ -38,7 +41,7 @@ func (s *SpoofDNS) Serve() error {
 	if err != nil {
 		return fmt.Errorf("spoof dns (udp) %s: %w", s.Addr, err)
 	}
-	s.Logger.Log(ConnLogEntry{Action: "info", Dst: "listening spoof-dns udp " + s.Addr})
+	s.Logger.Log(logging.ConnLogEntry{Action: "info", Dst: "listening spoof-dns udp " + s.Addr})
 	go s.serveUDP(udp)
 
 	tcp, err := net.Listen("tcp", s.Addr)
@@ -46,7 +49,7 @@ func (s *SpoofDNS) Serve() error {
 		// Some clusters only route UDP 53; TCP is best-effort.
 		return nil
 	}
-	s.Logger.Log(ConnLogEntry{Action: "info", Dst: "listening spoof-dns tcp " + s.Addr})
+	s.Logger.Log(logging.ConnLogEntry{Action: "info", Dst: "listening spoof-dns tcp " + s.Addr})
 	for {
 		c, err := tcp.Accept()
 		if err != nil {
@@ -110,23 +113,23 @@ func (s *SpoofDNS) handle(query []byte) []byte {
 	}
 	dec := s.Decider.Decide(name, "")
 	switch dec.Action {
-	case ActionBlock:
-		s.Logger.Log(ConnLogEntry{Host: name, Action: "block-dns", Rule: firstMatch(dec)})
-		return buildNXDOMAIN(query)
-	case ActionRewrite:
+	case rule.ActionBlock:
+		s.Logger.Log(logging.ConnLogEntry{Host: name, Action: "block-dns", Rule: firstMatch(dec)})
+		return BuildNXDOMAIN(query)
+	case rule.ActionRewrite:
 		if qtype == dnsTypeA {
-			s.Logger.Log(ConnLogEntry{Host: name, Action: "spoof-dns", Rule: firstMatch(dec), Dst: s.SelfIP})
+			s.Logger.Log(logging.ConnLogEntry{Host: name, Action: "spoof-dns", Rule: firstMatch(dec), Dst: s.SelfIP})
 			return buildARecord(query, s.SelfIP, dnsTypeA)
 		}
 		if qtype == dnsTypeAAAA || qtype == dnsTypeHTTPS || qtype == dnsTypeSVCB {
 			// NODATA: no IPv6 answer (self-ip is IPv4) and no HTTPS/SVCB
 			// record, which cuts the client's QUIC/HTTP3 discovery path —
 			// spoof mode has no UDP listener to catch h3.
-			s.Logger.Log(ConnLogEntry{Host: name, Action: "spoof-nodata", Rule: firstMatch(dec)})
+			s.Logger.Log(logging.ConnLogEntry{Host: name, Action: "spoof-nodata", Rule: firstMatch(dec)})
 			return buildNODATA(query)
 		}
 		return s.forward(query)
-	case ActionDirect:
+	case rule.ActionDirect:
 		if s.Decider.ShouldDecrypt(dec) {
 			if qtype == dnsTypeA {
 				return buildARecord(query, s.SelfIP, dnsTypeA)
@@ -237,18 +240,18 @@ func questionEnd(msg []byte) (int, bool) {
 func buildARecord(query []byte, ip string, qtype uint16) []byte {
 	qe, ok := questionEnd(query)
 	if !ok {
-		return buildNXDOMAIN(query)
+		return BuildNXDOMAIN(query)
 	}
 	parsed := net.ParseIP(ip)
 	if parsed == nil {
-		return buildNXDOMAIN(query)
+		return BuildNXDOMAIN(query)
 	}
 	if qtype != dnsTypeA {
-		return buildNXDOMAIN(query)
+		return BuildNXDOMAIN(query)
 	}
 	v4 := parsed.To4()
 	if v4 == nil {
-		return buildNXDOMAIN(query)
+		return BuildNXDOMAIN(query)
 	}
 	rdata := v4
 
@@ -304,4 +307,27 @@ func readFull(c net.Conn, b []byte) (int, error) {
 		}
 	}
 	return got, nil
+}
+
+// firstMatch returns the first match pattern of a decision for logging
+// ("" when the default action applied).
+func firstMatch(dec rule.Decision) string {
+	if dec.Rule == nil || len(dec.Rule.Match) == 0 {
+		return ""
+	}
+	return dec.Rule.Match[0]
+}
+
+// BuildNXDOMAIN rewrites a query into a response with RCODE=3 and no records.
+func BuildNXDOMAIN(query []byte) []byte {
+	resp := make([]byte, len(query))
+	copy(resp, query)
+	flags := binary.BigEndian.Uint16(query[2:4])
+	flags |= 0x8000 // QR=1
+	flags |= 0x0003 // RCODE=3 NXDOMAIN
+	binary.BigEndian.PutUint16(resp[2:4], flags)
+	binary.BigEndian.PutUint16(resp[6:8], 0)   // ANCOUNT
+	binary.BigEndian.PutUint16(resp[8:10], 0)  // NSCOUNT
+	binary.BigEndian.PutUint16(resp[10:12], 0) // ARCOUNT
+	return resp
 }

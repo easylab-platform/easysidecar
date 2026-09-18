@@ -1,8 +1,6 @@
-package main
+package relay
 
 import (
-	"encoding/binary"
-	"io"
 	"net"
 	"strings"
 )
@@ -43,14 +41,3 @@ func peekHTTPHost(tr *tlsReader) string {
 	}
 	return strings.TrimSpace(rest[:j])
 }
-
-// dnsHeader helpers: read/patch the flag word of a raw DNS message.
-func binaryFlags(msg []byte) uint16 {
-	if len(msg) < 4 {
-		return 0
-	}
-	return binary.BigEndian.Uint16(msg[2:4])
-}
-
-// ioEOF keeps the io import used by relay-style helpers.
-var _ = io.EOF

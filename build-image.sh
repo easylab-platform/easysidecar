@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Build and push the easyproxy sidecar image WITHOUT a local build daemon.
+# Build and push the easysidecar image WITHOUT a local build daemon.
 #
 # Pipeline (same verified shape as easylab/build-image.sh):
-#   1. buildctl targets the shared cluster buildkitd, builds easyproxy's
-#      single-stage Dockerfile, and exports a docker archive (RepoTag set).
+#   1. buildctl targets the shared cluster buildkitd, builds easysidecar's
+#      Dockerfile, and exports a docker archive (RepoTag set).
 #   2. skopeo copies the archive to the forgejo OCI registry.
 set -euo pipefail
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 REGISTRY="${REGISTRY:-forgejo.develop.10.199.64.20.nip.io}"
 NAMESPACE="${NAMESPACE:-easylab}"
-NAME="${NAME:-easyproxy}"
+NAME="${NAME:-easysidecar}"
 TAG="${TAG:-$(date +%Y%m%d%H%M%S)}"
 DEST="${REGISTRY}/${NAMESPACE}/${NAME}:${TAG}"
 BUILDKIT="${BUILDKIT_ADDR:-tcp://buildkitd.temp.svc.cluster.local:1234}"
@@ -23,9 +23,9 @@ trap 'rm -rf "${WORK}"' EXIT
 
 CTX="${WORK}/ctx"
 mkdir -p "${CTX}"
-tar -C "${SRC_DIR}" --exclude='./.git' --exclude='./easyproxy' -cf - . | tar -C "${CTX}" -xf -
+tar -C "${SRC_DIR}" --exclude='./.git' --exclude='./easyproxy' --exclude='./easysidecar' -cf - . | tar -C "${CTX}" -xf -
 
-echo "Building easyproxy image -> ${DEST} (buildkitd=${BUILDKIT})"
+echo "Building easysidecar image -> ${DEST} (buildkitd=${BUILDKIT})"
 buildctl --addr "${BUILDKIT}" build \
   --frontend dockerfile.v0 \
   --local "context=${CTX}" \

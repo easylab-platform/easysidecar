@@ -1,16 +1,16 @@
-package main
+package relay
 
 import (
 	"bytes"
-	"crypto/rand"
-	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
-	"crypto/x509/pkix"
-	"math/big"
+	"encoding/pem"
 	"net"
 	"testing"
 	"time"
+
+	"github.com/easylab-platform/easysidecar/mitm"
+	"github.com/easylab-platform/easysidecar/testca"
 )
 
 // TestSNIParsing drives the ClientHello reader with a real TLS client.
@@ -119,33 +119,18 @@ func TestSNIReplay(t *testing.T) {
 
 // TestLoadMITMAndLeaf verifies CA loading and per-host leaf issuance (SAN).
 func TestLoadMITMAndLeaf(t *testing.T) {
-	// Mint a CA for the test.
-	caKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	caPEM, keyPEM, err := testca.Mint()
 	if err != nil {
 		t.Fatal(err)
 	}
-	tmpl := &x509.Certificate{
-		SerialNumber:          big.NewInt(1),
-		Subject:               pkix.Name{CommonName: "easyproxy-test-ca"},
-		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().Add(time.Hour),
-		IsCA:                  true,
-		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
-		BasicConstraintsValid: true,
-	}
-	caDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &caKey.PublicKey, caKey)
-	if err != nil {
+	dir := t.TempDir()
+	if err := writePEMFile(t, dir, caPEM, keyPEM); err != nil {
 		t.Fatal(err)
 	}
-	certPath, keyPath := t.TempDir()+"/ca.crt", t.TempDir()+"/ca.key"
-	if err := writePEM(certPath, "CERTIFICATE", caDER); err != nil {
-		t.Fatal(err)
-	}
-	if err := writePEMKey(keyPath, caKey); err != nil {
-		t.Fatal(err)
-	}
+	caBlock, _ := pem.Decode(caPEM)
+	caDER := caBlock.Bytes
 
-	m, err := LoadMITM(certPath, keyPath)
+	m, err := mitm.LoadMITM(dir+"/ca.crt", dir+"/ca.key")
 	if err != nil {
 		t.Fatal(err)
 	}

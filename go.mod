@@ -1,4 +1,4 @@
-module github.com/easylab-platform/easyproxy
+module github.com/easylab-platform/easysidecar
 
 go 1.26.5
 

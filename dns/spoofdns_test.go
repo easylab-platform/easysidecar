@@ -1,9 +1,23 @@
-package main
+package dns
 
 import (
 	"net"
+	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/easylab-platform/easysidecar/logging"
+	"github.com/easylab-platform/easysidecar/rule"
 )
+
+func writeRules(t *testing.T, yaml string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "rules.yaml")
+	if err := os.WriteFile(p, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
 
 func buildQuery(t *testing.T, name string, qtype uint16) []byte {
 	t.Helper()
@@ -67,7 +81,7 @@ func TestBuildARecord(t *testing.T) {
 }
 
 func TestSpoofDNSClassify(t *testing.T) {
-	rs, err := LoadRules(writeRules(t, `
+	rs, err := rule.LoadRules(writeRules(t, `
 rules:
   - match: ["*.npmjs.org"]
     action: rewrite
@@ -79,10 +93,10 @@ default: direct
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := NewDecider(rs, false)
+	d := rule.NewDecider(rs, false)
 	// A forwarder that returns a canned "real" answer for direct queries.
 	fwd := func(query []byte) []byte { return query } // echo (test only)
-	s := &SpoofDNS{SelfIP: "10.0.0.9", Decider: d, Logger: NewConnLogger(), UpstreamDNS: nil}
+	s := &SpoofDNS{SelfIP: "10.0.0.9", Decider: d, Logger: logging.NewConnLogger(), UpstreamDNS: nil}
 
 	// rewrite -> spoofed A at SelfIP.
 	resp := s.handle(buildQuery(t, "registry.npmjs.org", dnsTypeA))
@@ -109,24 +123,11 @@ default: direct
 	_ = fwd
 }
 
-func TestWithPort(t *testing.T) {
-	cases := map[string]string{
-		"10.96.0.10":    "10.96.0.10:53",
-		"10.96.0.10:53": "10.96.0.10:53",
-		"":              "8.8.8.8:53",
-	}
-	for in, want := range cases {
-		if got := withPort(in, "53"); got != want {
-			t.Errorf("withPort(%q) = %q want %q", in, got, want)
-		}
-	}
-}
-
 // TestSpoofNODATA verifies AAAA and HTTPS/SVCB queries for handled names get
 // NODATA (NOERROR, zero answers) so clients never attempt QUIC/HTTP3 or a
 // bogus IPv6 address.
 func TestSpoofNODATA(t *testing.T) {
-	rs, err := LoadRules(writeRules(t, `
+	rs, err := rule.LoadRules(writeRules(t, `
 rules:
   - match: ["*.npmjs.org"]
     action: rewrite
@@ -136,7 +137,7 @@ default: direct
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &SpoofDNS{SelfIP: "10.0.0.9", Decider: NewDecider(rs, false), Logger: NewConnLogger(), UpstreamDNS: nil}
+	s := &SpoofDNS{SelfIP: "10.0.0.9", Decider: rule.NewDecider(rs, false), Logger: logging.NewConnLogger(), UpstreamDNS: nil}
 
 	for _, qt := range []uint16{dnsTypeAAAA, dnsTypeHTTPS, dnsTypeSVCB} {
 		resp := s.handle(buildQuery(t, "registry.npmjs.org", qt))
@@ -156,11 +157,11 @@ default: direct
 // for AAAA/HTTPS (so the client sticks to the A record pointed at the
 // sidecar).
 func TestSpoofDirectNODATA(t *testing.T) {
-	rs, err := LoadRules(writeRules(t, "rules: []\ndefault: direct\nmitm_default: true\n"))
+	rs, err := rule.LoadRules(writeRules(t, "rules: []\ndefault: direct\nmitm_default: true\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &SpoofDNS{SelfIP: "10.0.0.9", Decider: NewDecider(rs, true), Logger: NewConnLogger()}
+	s := &SpoofDNS{SelfIP: "10.0.0.9", Decider: rule.NewDecider(rs, true), Logger: logging.NewConnLogger()}
 	resp := s.handle(buildQuery(t, "example.com", dnsTypeAAAA))
 	if resp == nil {
 		t.Fatal("no response")

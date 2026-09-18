@@ -1,12 +1,12 @@
-package main
+package relay
 
 import (
 	"fmt"
 	"net"
 )
 
-// firstNonLoopbackIPv4 returns the Pod's primary IPv4 address.
-func firstNonLoopbackIPv4() (string, error) {
+// FirstNonLoopbackIPv4 returns the Pod's primary IPv4 address.
+func FirstNonLoopbackIPv4() (string, error) {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
 		return "", err

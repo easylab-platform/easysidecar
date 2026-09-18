@@ -1,4 +1,4 @@
-package main
+package mitm
 
 import (
 	"crypto/rand"
@@ -59,7 +59,7 @@ func (m *MITM) LeafFor(host string) (*tls.Certificate, error) {
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber:          serial,
-		Subject:               pkix.Name{CommonName: host, Organization: []string{"easylab-easyproxy"}},
+		Subject:               pkix.Name{CommonName: host, Organization: []string{"easylab-easysidecar"}},
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().Add(24 * time.Hour),
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,

@@ -1,14 +1,20 @@
-package main
+package server
 
 import (
 	"fmt"
 	"net"
 	"strings"
+
+	"github.com/easylab-platform/easysidecar/dns"
+	"github.com/easylab-platform/easysidecar/logging"
+	"github.com/easylab-platform/easysidecar/mitm"
+	"github.com/easylab-platform/easysidecar/relay"
+	"github.com/easylab-platform/easysidecar/rule"
 )
 
 // run loads the rule set and serves the listeners (spoof mode is the only
 // interception mechanism).
-func run(cfg *Config) error {
+func Run(cfg *Config) error {
 	return runProxy(cfg)
 }
 
@@ -16,18 +22,18 @@ func run(cfg *Config) error {
 // flag selects the DNS-spoof interception mode (the resolver plus direct
 // :443/:80 listeners).
 func runProxy(cfg *Config) error {
-	rules, err := LoadRules(cfg.RulesFile)
+	rules, err := rule.LoadRules(cfg.RulesFile)
 	if err != nil {
 		return err
 	}
-	logger := NewConnLogger()
-	decisions := NewDecider(rules, cfg.MitmDefault)
+	logger := logging.NewConnLogger()
+	decisions := rule.NewDecider(rules, cfg.MitmDefault)
 
 	// MITM authority (nil when no CA configured: rewrite rules then fail
 	// closed with a clear error instead of silently bypassing policy).
-	var mitm *MITM
+	var m *mitm.MITM
 	if cfg.CaCert != "" && cfg.CaKey != "" {
-		mitm, err = LoadMITM(cfg.CaCert, cfg.CaKey)
+		m, err = mitm.LoadMITM(cfg.CaCert, cfg.CaKey)
 		if err != nil {
 			return fmt.Errorf("load CA: %w", err)
 		}
@@ -36,27 +42,27 @@ func runProxy(cfg *Config) error {
 	}
 
 	// Spoof is the only interception mode: DNS-based, no netfilter.
-	return runSpoof(cfg, decisions, mitm, logger)
+	return runSpoof(cfg, decisions, m, logger)
 }
 
 // runSpoof serves the dns-spoof mode listeners: the resolver plus the direct
 // TLS/HTTP faces. It composes with an upstream egress proxy (mihomo) for
 // DIRECT traffic.
-func runSpoof(cfg *Config, decisions *Decider, mitm *MITM, logger *ConnLogger) error {
+func runSpoof(cfg *Config, decisions *rule.Decider, m *mitm.MITM, logger *logging.ConnLogger) error {
 	upstreams := []string{withPort(cfg.UpstreamDNS, "53")}
-	dns := &SpoofDNS{
+	srv := &dns.SpoofDNS{
 		Addr: cfg.SpoofDNSAddr, SelfIP: cfg.SelfIP,
 		UpstreamDNS: upstreams, Decider: decisions, Logger: logger,
 	}
-	tcp := &SpoofTCP{
+	tcp := &relay.SpoofTCP{
 		TLSAddr: cfg.SpoofTLSAddr, HTTPAddr: cfg.SpoofHTTPAddr,
-		Decider: decisions, MITM: mitm, UpstreamProxy: cfg.UpstreamProxy, Logger: logger,
+		Decider: decisions, MITM: m, UpstreamProxy: cfg.UpstreamProxy, Logger: logger,
 	}
-	logger.Log(ConnLogEntry{Action: "info", Dst: "spoof mode: self=" + cfg.SelfIP +
+	logger.Log(logging.ConnLogEntry{Action: "info", Dst: "spoof mode: self=" + cfg.SelfIP +
 		" dns-upstream=" + strings.Join(upstreams, ",") + " egress-proxy=" + cfg.UpstreamProxy})
 
 	errCh := make(chan error, 2)
-	go func() { errCh <- dns.Serve() }()
+	go func() { errCh <- srv.Serve() }()
 	go func() { errCh <- tcp.Serve() }()
 	return <-errCh
 }

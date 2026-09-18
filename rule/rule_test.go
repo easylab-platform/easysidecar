@@ -1,10 +1,8 @@
-package main
+package rule
 
 import (
-	"net"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -73,8 +71,8 @@ func TestMatchHost(t *testing.T) {
 		{"exact.example", "other.example", false},
 	}
 	for _, c := range cases {
-		if got := matchHost(c.pattern, c.host); got != c.want {
-			t.Errorf("matchHost(%q, %q) = %v want %v", c.pattern, c.host, got, c.want)
+		if got := MatchHost(c.pattern, c.host); got != c.want {
+			t.Errorf("MatchHost(%q, %q) = %v want %v", c.pattern, c.host, got, c.want)
 		}
 	}
 }
@@ -126,78 +124,5 @@ func TestMapPath(t *testing.T) {
 		if got := r.MapPath(c.in); got != c.want {
 			t.Errorf("%s: MapPath(%q) = %q want %q", c.name, c.in, got, c.want)
 		}
-	}
-}
-
-func TestRewriteTarget(t *testing.T) {
-	r := &Rule{AddPrefix: "/pkgs/npm"}
-	cases := []struct{ in, want string }{
-		{"/react", "/pkgs/npm/react"},
-		{"/react?write=true", "/pkgs/npm/react?write=true"},
-		{"http://registry.npmjs.org/react", "http://registry.npmjs.org/pkgs/npm/react"},
-		{"http://registry.npmjs.org", "http://registry.npmjs.org"},
-	}
-	for _, c := range cases {
-		if got := rewriteTarget(c.in, r.MapPath); got != c.want {
-			t.Errorf("rewriteTarget(%q) = %q want %q", c.in, got, c.want)
-		}
-	}
-}
-
-func TestHeaderReaderRewrite(t *testing.T) {
-	c1, c2 := net.Pipe()
-	defer func() { _ = c1.Close() }()
-	defer func() { _ = c2.Close() }()
-	go func() {
-		_, _ = c2.Write([]byte("PUT /crate/foo HTTP/1.1\r\nHost: index.crates.io\r\nContent-Length: 4\r\n\r\nBODY"))
-	}()
-	br := newHeaderReader(c1)
-	host, err := br.readHost()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if host != "index.crates.io" {
-		t.Fatalf("host = %q", host)
-	}
-	out := string(br.rewrite((&Rule{AddPrefix: "/pkgs/cargo"}).MapPath))
-	if !strings.Contains(out, "PUT /pkgs/cargo/crate/foo HTTP/1.1\r\n") {
-		t.Fatalf("request line not mapped: %q", out)
-	}
-	if !strings.Contains(out, "Host: index.crates.io\r\n") {
-		t.Fatalf("Host header changed: %q", out)
-	}
-	if !strings.HasSuffix(out, "\r\n\r\nBODY") {
-		t.Fatalf("body lost: %q", out)
-	}
-}
-
-func TestHeaderReaderRewriteNoopUnchanged(t *testing.T) {
-	c1, c2 := net.Pipe()
-	defer func() { _ = c1.Close() }()
-	defer func() { _ = c2.Close() }()
-	raw := "GET /x HTTP/1.1\r\nHost: h\r\n\r\n"
-	go func() { _, _ = c2.Write([]byte(raw)) }()
-	br := newHeaderReader(c1)
-	if _, err := br.readHost(); err != nil {
-		t.Fatal(err)
-	}
-	if got := string(br.rewrite(nil)); got != raw {
-		t.Fatalf("nil fn rewrite = %q want %q", got, raw)
-	}
-}
-
-func TestDeciderMitmDefault(t *testing.T) {
-	rs, err := LoadRules(writeRules(t, "rules: []\ndefault: direct\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	d := NewDecider(rs, true) // mitm_default on
-	dec := d.Decide("example.com", "8.8.8.8")
-	if !d.ShouldDecrypt(dec) {
-		t.Fatal("mitm_default=true must decrypt direct connections")
-	}
-	d2 := NewDecider(rs, false)
-	if d2.ShouldDecrypt(d2.Decide("example.com", "8.8.8.8")) {
-		t.Fatal("mitm_default=false must not decrypt direct")
 	}
 }
