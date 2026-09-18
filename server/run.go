@@ -34,11 +34,43 @@ func runCaptureInit(cfg *Config) error {
 	if err != nil {
 		return fmt.Errorf("capture-init: bad port %q: %w", port, err)
 	}
-	if err := capture.Install(cfg.SelfIP, p, capture.Mark); err != nil {
+	_, dnsPort, err := net.SplitHostPort(cfg.SpoofDNSAddr)
+	if err != nil {
+		return fmt.Errorf("capture-init: bad -spoof-dns-addr %q: %w", cfg.SpoofDNSAddr, err)
+	}
+	dp, err := net.LookupPort("udp", dnsPort)
+	if err != nil {
+		return fmt.Errorf("capture-init: bad dns port %q: %w", dnsPort, err)
+	}
+	fp := 0
+	if cfg.CaptureForwardAddr != "" {
+		_, fport, ferr := net.SplitHostPort(cfg.CaptureForwardAddr)
+		if ferr != nil {
+			return fmt.Errorf("capture-init: bad -capture-forward-addr %q: %w", cfg.CaptureForwardAddr, ferr)
+		}
+		fp, err = net.LookupPort("tcp", fport)
+		if err != nil {
+			return fmt.Errorf("capture-init: bad forward port %q: %w", fport, err)
+		}
+	}
+	if err := capture.Install(capture.Policy{
+		SelfIP:      cfg.SelfIP,
+		CapturePort: p,
+		ForwardPort: fp,
+		DNSPort:     dp,
+		Mark:        capture.Mark,
+		DNSUpstream: cfg.UpstreamDNS,
+		UDPAllow:    cfg.CaptureUDPAllow,
+		UDPMode:     cfg.CaptureUDPMode,
+		DefaultMode: cfg.CaptureDefaultMode,
+		ExemptCIDRs: cfg.CaptureExemptCIDRs,
+		UIDs:        cfg.CaptureUIDs,
+	}); err != nil {
 		return err
 	}
 	logging.NewConnLogger().Log(logging.ConnLogEntry{
-		Action: "info", Dst: fmt.Sprintf("capture-init: redirect tcp -> %s (mark 0x%x)", cfg.CaptureAddr, capture.Mark)})
+		Action: "info", Dst: fmt.Sprintf("capture-init: dns->:%d tcp->%s udp-mode=%s default-mode=%s (mark 0x%x)",
+			dp, cfg.CaptureAddr, cfg.CaptureUDPMode, cfg.CaptureDefaultMode, capture.Mark)})
 	return nil
 }
 
@@ -109,25 +141,39 @@ func runCapture(cfg *Config, decisions *rule.Decider, m *mitm.MITM, logger *logg
 		UpstreamProxy: cfg.UpstreamProxy, Logger: logger, Mark: capture.Mark,
 	}
 	logger.Log(logging.ConnLogEntry{Action: "info", Dst: "capture mode: listen=" + cfg.CaptureAddr +
-		" egress-proxy=" + cfg.UpstreamProxy + " dns-assist=" + boolStr(cfg.CaptureDNS)})
-	if !cfg.CaptureDNS {
-		return tcp.Serve()
-	}
+		" egress-proxy=" + cfg.UpstreamProxy + " dns-assist=" + boolStr(cfg.CaptureDNS) +
+		" forward=" + cfg.CaptureForwardAddr})
 
-	upstreams := []string{withPort(cfg.UpstreamDNS, "53")}
-	srv := &dns.SpoofDNS{
-		Addr: cfg.SpoofDNSAddr, SelfIP: cfg.SelfIP,
-		UpstreamDNS: upstreams, Decider: decisions, Logger: logger,
+	servers := []func() error{tcp.Serve}
+	if cfg.CaptureForwardAddr != "" {
+		// Forwarded (VM guest) connections carry SO_ORIGINAL_DST too, so the
+		// same face serves them on a second listener.
+		fwd := &relay.CaptureTCP{
+			Addr: cfg.CaptureForwardAddr, Decider: decisions, MITM: m,
+			UpstreamProxy: cfg.UpstreamProxy, Logger: logger, Mark: capture.Mark,
+		}
+		servers = append(servers, fwd.Serve)
 	}
-	spoof := &relay.SpoofTCP{
-		TLSAddr: cfg.SpoofTLSAddr, HTTPAddr: cfg.SpoofHTTPAddr,
-		Decider: decisions, MITM: m, UpstreamProxy: cfg.UpstreamProxy, Logger: logger,
-		Mark: capture.Mark,
+	if cfg.CaptureDNS {
+		upstreams := []string{withPort(cfg.UpstreamDNS, "53")}
+		srv := &dns.SpoofDNS{
+			Addr: cfg.SpoofDNSAddr, SelfIP: cfg.SelfIP,
+			UpstreamDNS: upstreams, Decider: decisions, Logger: logger,
+		}
+		spoof := &relay.SpoofTCP{
+			TLSAddr: cfg.SpoofTLSAddr, HTTPAddr: cfg.SpoofHTTPAddr,
+			Decider: decisions, MITM: m, UpstreamProxy: cfg.UpstreamProxy, Logger: logger,
+			Mark: capture.Mark,
+		}
+		servers = append(servers, srv.Serve, spoof.Serve)
 	}
-	errCh := make(chan error, 3)
-	go func() { errCh <- srv.Serve() }()
-	go func() { errCh <- spoof.Serve() }()
-	go func() { errCh <- tcp.Serve() }()
+	if len(servers) == 1 {
+		return servers[0]()
+	}
+	errCh := make(chan error, len(servers))
+	for _, s := range servers {
+		go func(s func() error) { errCh <- s() }(s)
+	}
 	return <-errCh
 }
 

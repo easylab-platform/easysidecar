@@ -73,6 +73,21 @@ type Config struct {
 	// Requires SelfIP and UpstreamDNS, and the Pod must use the sidecar as its
 	// resolver (dnsPolicy=None).
 	CaptureDNS bool
+	// CaptureForwardAddr is the listener for forwarded (VM guest) connections.
+	// Non-empty enables the PREROUTING/FORWARD rules. Empty disables.
+	CaptureForwardAddr string
+	// CaptureUDPAllow lists manually-allowed UDP endpoints ("host" or "cidr",
+	// optionally ":port"). UDP to them passes unmodified.
+	CaptureUDPAllow []string
+	// CaptureUDPMode is "log" (default) or "reject": what happens to UDP that
+	// is not DNS, not h3 and not in CaptureUDPAllow.
+	CaptureUDPMode string
+	// CaptureDefaultMode is "log" (default) or "reject": what happens to all
+	// other egress (ICMP, raw, uncaptured protocols).
+	CaptureDefaultMode string
+	// CaptureExemptCIDRs always pass (cluster resolver, apiserver, node/Pod/
+	// Service CIDRs). Only meaningful for the log/reject policies.
+	CaptureExemptCIDRs []string
 }
 
 func ParseFlags() (*Config, error) {
@@ -93,8 +108,16 @@ func ParseFlags() (*Config, error) {
 	flag.BoolVar(&cfg.CaptureInit, "capture-init", false, "capture mode: install iptables rules and exit (init container role)")
 	flag.BoolVar(&cfg.CaptureDNS, "capture-dns", false, "capture mode: also run the spoof resolver (for rewrite names that do not resolve publicly)")
 	uids := flag.String("capture-uids", "", "capture mode: comma-separated UIDs exempt from redirection (default: the sidecar's own UID)")
+	forwardAddr := flag.String("capture-forward-addr", "", "capture mode: listener for forwarded (VM guest) TCP; non-empty enables PREROUTING/FORWARD rules")
+	udpAllow := flag.String("capture-udp-allow", "", "capture mode: comma-separated UDP endpoints that always pass (host[:port] or cidr[:port])")
+	flag.StringVar(&cfg.CaptureUDPMode, "capture-udp-mode", "log", "capture mode: policy for non-DNS/h3 UDP: log|reject")
+	flag.StringVar(&cfg.CaptureDefaultMode, "capture-default-mode", "log", "capture mode: policy for other egress (ICMP/raw): log|reject")
+	exempt := flag.String("capture-exempt-cidrs", "", "capture mode: comma-separated CIDRs that always pass (resolver/apiserver/node/pod/service)")
 	flag.Parse()
 	cfg.CaptureUIDs = splitCSV(*uids)
+	cfg.CaptureUDPAllow = splitCSV(*udpAllow)
+	cfg.CaptureExemptCIDRs = splitCSV(*exempt)
+	cfg.CaptureForwardAddr = *forwardAddr
 
 	if cfg.Mode == "" {
 		cfg.Mode = ModeProxy
