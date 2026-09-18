@@ -13,11 +13,15 @@ sandboxes, services). It has two interception modes:
   certificate for the requested hostname (minted on demand from the injected
   CA), and relays the request to an EasyLab pull-through endpoint.
 
-- **capture**: privileged all-port interception. An init container installs
+- **capture**: privileged all-egress interception. An init container installs
   iptables rules that redirect every outbound TCP connection to the sidecar,
-  which recovers the real destination with `SO_ORIGINAL_DST`. DNS is left to
-  the cluster, so it covers arbitrary ports and non-DNS-aware clients — at the
-  cost of `NET_ADMIN` on the sidecar and init container.
+  which recovers the real destination with `SO_ORIGINAL_DST`; UDP uses
+  `IP_RECVORIGDSTADDR`, and DNS is forced to the sidecar resolver. Web ports
+  (`--capture-tcp-ports`, default 80,443) are proxied — TLS is MITM'd, plain
+  HTTP and h2c are transparently proxied with per-request audit
+  (method/path/status). Other TCP is captured, logged and spliced raw; UDP is
+  logged and relayed (or dropped). Costs `NET_ADMIN` on sidecar + init
+  container.
 
 The workload sees the real upstream hostnames and unmodified URLs, so an
 unmodified `npm`/`pip`/`docker`/... reaches the mirror with no configuration.
@@ -94,8 +98,15 @@ Capture mode:
 
 | flag | default | purpose |
 |---|---|---|
-| `-capture-init` | false | init-container role: install the iptables redirect and exit |
+| `-capture-init` | false | init-container role: install the iptables rules and exit |
 | `-capture-addr` | 0.0.0.0:15001 | listener for redirected TCP |
+| `-capture-tcp-ports` | 80,443 | destination ports proxied as web (HTTP/h2c) |
+| `-capture-udp-addr` | 0.0.0.0:15053 | listener for redirected non-DNS UDP |
+| `-capture-udp-allow` | | UDP endpoints that always pass (host[:port]/cidr[:port]) |
+| `-capture-udp-mode` | log | policy for non-DNS/h3 UDP: log\|reject |
+| `-capture-default-mode` | log | policy for other egress: log\|reject |
+| `-capture-exempt-cidrs` | | destinations that always pass |
+| `-capture-forward-addr` | | forwarded (VM guest) TCP listener; enables PREROUTING/FORWARD |
 | `-upstream-proxy` | | HTTP proxy for DIRECT egress (normalized to host:port) |
 
 The capture init container builds one nat chain (`EASYSIDECAR`) that RETURNs
