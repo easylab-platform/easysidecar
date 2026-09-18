@@ -50,7 +50,8 @@ type Policy struct {
 	// redirected back into itself.
 	DNSUpstream string
 	// UDPAllow are manually-allowed UDP endpoints ("host" or "cidr", optionally
-	// ":port"); UDP traffic to them is returned unmodified.
+	// ":port"); UDP traffic to them is returned unmodified. They are emitted
+	// before the h3 rule so an explicitly-allowed endpoint wins.
 	UDPAllow []string
 	// UDPMode is "log" (log + pass) or "reject" for UDP that is neither DNS,
 	// h3 nor an allowed endpoint.
@@ -239,15 +240,15 @@ func buildRules(p Policy, v6 bool) []invocation {
 		add("filter", act...)
 	}
 	policy := func(chain string) {
-		// h3 first: no QUIC interception yet, so udp/443 follows the UDP mode.
-		stage(chain, "udp", "443", "H3", p.UDPMode)
-		// Manually-allowed UDP endpoints pass (before the generic UDP policy).
+		// Manually-allowed UDP endpoints win over the h3/generic UDP policy.
 		for _, ep := range p.UDPAllow {
 			if ep = strings.TrimSpace(ep); ep == "" {
 				continue
 			}
 			add("filter", "-A", chain, "-p", "udp", "-d", ep, "-j", "RETURN")
 		}
+		// h3 next: no QUIC interception yet, so udp/443 follows the UDP mode.
+		stage(chain, "udp", "443", "H3", p.UDPMode)
 		stage(chain, "udp", "", "UDP", p.UDPMode)
 		stage(chain, "", "", "EGRESS", p.DefaultMode)
 	}
