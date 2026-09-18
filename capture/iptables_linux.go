@@ -42,6 +42,9 @@ type Policy struct {
 	ForwardPort int
 	// DNSPort is the sidecar resolver's port (DNS is forced there).
 	DNSPort int
+	// UDPCapturePort is the sidecar listener for other redirected UDP; 0
+	// disables UDP capture (UDP then only gets the log/reject policy).
+	UDPCapturePort int
 	// Mark is the fwmark exempting the sidecar's own sockets.
 	Mark int
 
@@ -177,6 +180,21 @@ func buildRules(p Policy, v6 bool) []invocation {
 		// overridden; only the exempt upstream above escapes).
 		dnat("nat", ChainNat, "udp", 53, p.DNSPort)
 		dnat("nat", ChainNat, "tcp", 53, p.DNSPort)
+		// Manually-allowed UDP destinations are not redirected (they pass).
+		for _, ep := range p.UDPAllow {
+			if ep = strings.TrimSpace(ep); ep == "" {
+				continue
+			}
+			add("nat", "-A", ChainNat, "-p", "udp", "-d", ep, "-j", "RETURN")
+		}
+		// Other UDP goes to the UDP capture listener so it is logged (and
+		// relayed) with its real destination. In reject mode the filter chain
+		// drops disallowed flows before they can be useful; we still redirect
+		// so the drop is logged by the sidecar rather than the kernel.
+		if p.UDPCapturePort > 0 {
+			add("nat", "-A", ChainNat, "-p", "udp", "-j", "DNAT",
+				"--to-destination", net.JoinHostPort(dst, strconv.Itoa(p.UDPCapturePort)))
+		}
 		// Redirect every remaining TCP connection to the capture listener.
 		add("nat", "-A", ChainNat, "-p", "tcp", "-j", "DNAT",
 			"--to-destination", net.JoinHostPort(dst, strconv.Itoa(p.CapturePort)))
@@ -190,6 +208,16 @@ func buildRules(p Policy, v6 bool) []invocation {
 		if !v6 {
 			dnat("nat", ChainPre, "udp", 53, p.DNSPort)
 			dnat("nat", ChainPre, "tcp", 53, p.DNSPort)
+			for _, ep := range p.UDPAllow {
+				if ep = strings.TrimSpace(ep); ep == "" {
+					continue
+				}
+				add("nat", "-A", ChainPre, "-p", "udp", "-d", ep, "-j", "RETURN")
+			}
+			if p.UDPCapturePort > 0 {
+				add("nat", "-A", ChainPre, "-p", "udp", "-j", "DNAT",
+					"--to-destination", net.JoinHostPort(dst, strconv.Itoa(p.UDPCapturePort)))
+			}
 			add("nat", "-A", ChainPre, "-p", "tcp", "-j", "DNAT",
 				"--to-destination", net.JoinHostPort(dst, strconv.Itoa(p.ForwardPort)))
 		}

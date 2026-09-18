@@ -76,6 +76,10 @@ type Config struct {
 	// CaptureForwardAddr is the listener for forwarded (VM guest) connections.
 	// Non-empty enables the PREROUTING/FORWARD rules. Empty disables.
 	CaptureForwardAddr string
+	// CaptureUDPAddr is the listener for non-DNS redirected UDP datagrams
+	// (default 0.0.0.0:15053). Empty disables UDP capture (UDP is then only
+	// subject to the filter policy).
+	CaptureUDPAddr string
 	// CaptureUDPAllow lists manually-allowed UDP endpoints ("host" or "cidr",
 	// optionally ":port"). UDP to them passes unmodified.
 	CaptureUDPAllow []string
@@ -109,6 +113,7 @@ func ParseFlags() (*Config, error) {
 	flag.BoolVar(&cfg.CaptureDNS, "capture-dns", false, "capture mode: also run the spoof resolver (for rewrite names that do not resolve publicly)")
 	uids := flag.String("capture-uids", "", "capture mode: comma-separated UIDs exempt from redirection (default: the sidecar's own UID)")
 	forwardAddr := flag.String("capture-forward-addr", "", "capture mode: listener for forwarded (VM guest) TCP; non-empty enables PREROUTING/FORWARD rules")
+	udpAddr := flag.String("capture-udp-addr", "0.0.0.0:15053", "capture mode: listener for non-DNS redirected UDP datagrams")
 	udpAllow := flag.String("capture-udp-allow", "", "capture mode: comma-separated UDP endpoints that always pass (host[:port] or cidr[:port])")
 	flag.StringVar(&cfg.CaptureUDPMode, "capture-udp-mode", "log", "capture mode: policy for non-DNS/h3 UDP: log|reject")
 	flag.StringVar(&cfg.CaptureDefaultMode, "capture-default-mode", "log", "capture mode: policy for other egress (ICMP/raw): log|reject")
@@ -118,6 +123,7 @@ func ParseFlags() (*Config, error) {
 	cfg.CaptureUDPAllow = splitCSV(*udpAllow)
 	cfg.CaptureExemptCIDRs = splitCSV(*exempt)
 	cfg.CaptureForwardAddr = *forwardAddr
+	cfg.CaptureUDPAddr = *udpAddr
 
 	if cfg.Mode == "" {
 		cfg.Mode = ModeProxy

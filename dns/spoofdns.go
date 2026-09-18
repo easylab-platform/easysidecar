@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/easylab-platform/easysidecar/capture"
 	"github.com/easylab-platform/easysidecar/logging"
 	"github.com/easylab-platform/easysidecar/rule"
 )
@@ -32,6 +33,15 @@ type SpoofDNS struct {
 	UpstreamDNS []string
 	Decider     *rule.Decider
 	Logger      *logging.ConnLogger
+	// Mark, when non-zero, is stamped on the resolver's sockets so the capture
+	// redirect exempts its replies and upstream forwards (no self-loop).
+	Mark int
+	// ForwardDirect disables the mitm_default "spoof every name to SelfIP"
+	// branch, so direct names resolve to their real IPs. Capture mode sets it:
+	// the netfilter redirect intercepts the real destination, so answering a
+	// Pod IP would route the connection over loopback instead (and lose the
+	// real destination).
+	ForwardDirect bool
 }
 
 // ServeDNS listens on UDP and TCP :53 (DNS over UDP plus TCP fallback for
@@ -40,6 +50,9 @@ func (s *SpoofDNS) Serve() error {
 	udp, err := net.ListenPacket("udp", s.Addr)
 	if err != nil {
 		return fmt.Errorf("spoof dns (udp) %s: %w", s.Addr, err)
+	}
+	if uc, ok := udp.(*net.UDPConn); ok {
+		_ = capture.SetMark(uc, s.Mark)
 	}
 	s.Logger.Log(logging.ConnLogEntry{Action: "info", Dst: "listening spoof-dns udp " + s.Addr})
 	go s.serveUDP(udp)
@@ -130,7 +143,7 @@ func (s *SpoofDNS) handle(query []byte) []byte {
 		}
 		return s.forward(query)
 	case rule.ActionDirect:
-		if s.Decider.ShouldDecrypt(dec) {
+		if !s.ForwardDirect && s.Decider.ShouldDecrypt(dec) {
 			if qtype == dnsTypeA {
 				return buildARecord(query, s.SelfIP, dnsTypeA)
 			}
@@ -138,15 +151,23 @@ func (s *SpoofDNS) handle(query []byte) []byte {
 				return buildNODATA(query)
 			}
 		}
+		s.Logger.Log(logging.ConnLogEntry{Host: name, Action: "dns-forward"})
 		return s.forward(query)
 	}
+	s.Logger.Log(logging.ConnLogEntry{Host: name, Action: "dns-forward"})
 	return s.forward(query)
 }
 
 // forward relays the query to the configured upstream resolver(s).
 func (s *SpoofDNS) forward(query []byte) []byte {
 	for _, up := range s.UpstreamDNS {
-		conn, err := net.Dial("udp", up)
+		var conn net.Conn
+		var err error
+		if s.Mark != 0 {
+			conn, err = capture.MarkedDialer(s.Mark).Dial("udp", up)
+		} else {
+			conn, err = net.Dial("udp", up)
+		}
 		if err != nil {
 			continue
 		}
