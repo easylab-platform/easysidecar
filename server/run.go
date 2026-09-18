@@ -96,14 +96,46 @@ func runSpoof(cfg *Config, decisions *rule.Decider, m *mitm.MITM, logger *loggin
 // runCapture serves the all-port capture listener. The init container has
 // already pointed the Pod's outbound TCP at -capture-addr; each connection's
 // real destination arrives via SO_ORIGINAL_DST.
+//
+// With CaptureDNS the spoof resolver AND the spoof :443/:80 faces also run.
+// Names the policy rewrites may not resolve publicly (NXDOMAIN), so the
+// resolver answers them with SelfIP; a client dialing the Pod IP hits the
+// loopback exemption in the nat chain, so the spoof faces must be listening
+// there for the connection to be served. Publicly-resolvable names still take
+// the capture path (real IP -> redirect -> SO_ORIGINAL_DST).
 func runCapture(cfg *Config, decisions *rule.Decider, m *mitm.MITM, logger *logging.ConnLogger) error {
 	tcp := &relay.CaptureTCP{
 		Addr: cfg.CaptureAddr, Decider: decisions, MITM: m,
 		UpstreamProxy: cfg.UpstreamProxy, Logger: logger, Mark: capture.Mark,
 	}
 	logger.Log(logging.ConnLogEntry{Action: "info", Dst: "capture mode: listen=" + cfg.CaptureAddr +
-		" egress-proxy=" + cfg.UpstreamProxy})
-	return tcp.Serve()
+		" egress-proxy=" + cfg.UpstreamProxy + " dns-assist=" + boolStr(cfg.CaptureDNS)})
+	if !cfg.CaptureDNS {
+		return tcp.Serve()
+	}
+
+	upstreams := []string{withPort(cfg.UpstreamDNS, "53")}
+	srv := &dns.SpoofDNS{
+		Addr: cfg.SpoofDNSAddr, SelfIP: cfg.SelfIP,
+		UpstreamDNS: upstreams, Decider: decisions, Logger: logger,
+	}
+	spoof := &relay.SpoofTCP{
+		TLSAddr: cfg.SpoofTLSAddr, HTTPAddr: cfg.SpoofHTTPAddr,
+		Decider: decisions, MITM: m, UpstreamProxy: cfg.UpstreamProxy, Logger: logger,
+		Mark: capture.Mark,
+	}
+	errCh := make(chan error, 3)
+	go func() { errCh <- srv.Serve() }()
+	go func() { errCh <- spoof.Serve() }()
+	go func() { errCh <- tcp.Serve() }()
+	return <-errCh
+}
+
+func boolStr(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
 }
 
 // withPort appends :53 when an upstream resolver is given as a bare IP.

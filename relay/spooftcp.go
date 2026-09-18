@@ -16,6 +16,7 @@ import (
 
 	"golang.org/x/net/http2"
 
+	"github.com/easylab-platform/easysidecar/capture"
 	"github.com/easylab-platform/easysidecar/logging"
 	"github.com/easylab-platform/easysidecar/mitm"
 	"github.com/easylab-platform/easysidecar/rule"
@@ -34,6 +35,11 @@ type SpoofTCP struct {
 	MITM          *mitm.MITM
 	UpstreamProxy string // optional HTTP proxy for DIRECT egress (mihomo)
 	Logger        *logging.ConnLogger
+	// Mark stamps SO_MARK on the face's own upstream sockets. It is set when
+	// the capture redirect is active (capture+dns mode): without it the spoof
+	// face's rewrite/egress dials would be redirected back into the capture
+	// listener and rewritten a second time. Zero disables marking.
+	Mark int
 }
 
 // Serve starts both listeners; it blocks until one fails.
@@ -174,7 +180,7 @@ func mitmRelayConn(c net.Conn, r io.Reader, host string, e logging.ConnLogEntry,
 // (keep-alive) connection has its path mapped through the rule's strip/add
 // prefixes before forwarding; the original Host header is preserved.
 func (s *SpoofTCP) rewriteRelay(c net.Conn, r io.Reader, rl *rule.Rule, host string, e logging.ConnLogEntry) {
-	rewriteRelayConn(c, r, rl, host, e, s.MITM, s.Logger)
+	rewriteRelayConnDial(c, r, rl, host, e, s.MITM, s.Logger, s.markedDialContext())
 }
 
 // rewriteRelayConn terminates the client TLS and proxies the decrypted HTTP
@@ -227,7 +233,18 @@ func rewriteRelayConnDial(c net.Conn, r io.Reader, rl *rule.Rule, host string, e
 // (see artifactkit's host allow-list), so a hostile client cannot point the
 // mirror at an arbitrary origin.
 func (s *SpoofTCP) rewriteProxy(rl *rule.Rule, host, origScheme string) *httputil.ReverseProxy {
-	return buildRewriteProxy(rl, host, origScheme, nil)
+	return buildRewriteProxy(rl, host, origScheme, s.markedDialContext())
+}
+
+// markedDialContext returns the transport dialer for the spoof face: in
+// capture+dns mode every socket gets SO_MARK so the nat chain exempts it from
+// the redirect (no double rewrite). nil when no mark is configured.
+func (s *SpoofTCP) markedDialContext() func(ctx context.Context, network, addr string) (net.Conn, error) {
+	if s.Mark == 0 {
+		return nil
+	}
+	d := capture.MarkedDialer(s.Mark)
+	return d.DialContext
 }
 
 // buildRewriteProxy is the shared implementation behind both faces' rewrite
@@ -408,14 +425,22 @@ func (s *SpoofTCP) passthrough(c net.Conn, host string, tr *tlsReader, e logging
 // dialEgress dials the target directly, or via the configured upstream HTTP
 // proxy (mihomo) using CONNECT so the cluster's egress policy still applies.
 func (s *SpoofTCP) dialEgress(addr string, e logging.ConnLogEntry) (net.Conn, error) {
+	dial := func(target string) (net.Conn, error) {
+		if s.Mark == 0 {
+			return net.DialTimeout("tcp", target, 10*time.Second)
+		}
+		d := capture.MarkedDialer(s.Mark)
+		d.Timeout = 10 * time.Second
+		return d.Dial("tcp", target)
+	}
 	if s.UpstreamProxy == "" {
-		conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
+		conn, err := dial(addr)
 		if err != nil {
 			e.Err = err.Error()
 		}
 		return conn, err
 	}
-	conn, err := net.DialTimeout("tcp", s.UpstreamProxy, 10*time.Second)
+	conn, err := dial(s.UpstreamProxy)
 	if err != nil {
 		e.Err = "upstream proxy dial: " + err.Error()
 		return nil, err

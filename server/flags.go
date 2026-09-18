@@ -66,6 +66,13 @@ type Config struct {
 	CaptureInit bool
 	// CaptureUIDs exempts these UIDs from redirection (the sidecar itself).
 	CaptureUIDs []string
+	// CaptureDNS, when true, also runs the spoof resolver alongside capture.
+	// Capture alone cannot reach a rewrite host whose name does not resolve
+	// publicly (NXDOMAIN); the resolver answers those with SelfIP, and the
+	// netfilter redirect then steers the connection to the capture listener.
+	// Requires SelfIP and UpstreamDNS, and the Pod must use the sidecar as its
+	// resolver (dnsPolicy=None).
+	CaptureDNS bool
 }
 
 func ParseFlags() (*Config, error) {
@@ -84,6 +91,7 @@ func ParseFlags() (*Config, error) {
 	flag.StringVar(&cfg.SpoofHTTPAddr, "spoof-http-addr", "0.0.0.0:80", "spoof mode: plain-HTTP listen address")
 	flag.StringVar(&cfg.CaptureAddr, "capture-addr", "0.0.0.0:15001", "capture mode: listen address for redirected TCP")
 	flag.BoolVar(&cfg.CaptureInit, "capture-init", false, "capture mode: install iptables rules and exit (init container role)")
+	flag.BoolVar(&cfg.CaptureDNS, "capture-dns", false, "capture mode: also run the spoof resolver (for rewrite names that do not resolve publicly)")
 	uids := flag.String("capture-uids", "", "capture mode: comma-separated UIDs exempt from redirection (default: the sidecar's own UID)")
 	flag.Parse()
 	cfg.CaptureUIDs = splitCSV(*uids)
@@ -105,24 +113,34 @@ func ParseFlags() (*Config, error) {
 			return nil, fmt.Errorf("%s mode requires -rules", cfg.Mode)
 		}
 		if cfg.Spoof || cfg.Mode == ModeCapture {
-			if cfg.Spoof && cfg.UpstreamDNS == "" {
-				return nil, fmt.Errorf("spoof mode requires -upstream-dns")
+			if (cfg.Spoof || cfg.CaptureDNS) && cfg.UpstreamDNS == "" {
+				return nil, fmt.Errorf("%s requires -upstream-dns", dnsModeName(cfg))
 			}
-			if cfg.SelfIP == "" {
-				cfg.SelfIP = os.Getenv("POD_IP")
-			}
-			if cfg.SelfIP == "" {
-				ip, err := relay.FirstNonLoopbackIPv4()
-				if err != nil {
-					return nil, fmt.Errorf("spoof mode: cannot determine self IP: %w", err)
+			if cfg.Spoof || cfg.CaptureDNS {
+				if cfg.SelfIP == "" {
+					cfg.SelfIP = os.Getenv("POD_IP")
 				}
-				cfg.SelfIP = ip
+				if cfg.SelfIP == "" {
+					ip, err := relay.FirstNonLoopbackIPv4()
+					if err != nil {
+						return nil, fmt.Errorf("%s: cannot determine self IP: %w", dnsModeName(cfg), err)
+					}
+					cfg.SelfIP = ip
+				}
 			}
 		}
 	default:
 		return nil, fmt.Errorf("unknown mode %q (proxy|capture)", string(cfg.Mode))
 	}
 	return cfg, nil
+}
+
+// dnsModeName names the mode for error messages.
+func dnsModeName(cfg *Config) string {
+	if cfg.Mode == ModeCapture {
+		return "capture dns assist"
+	}
+	return "spoof mode"
 }
 
 // hostPort strips an http(s):// scheme from a proxy URL, leaving host:port.
