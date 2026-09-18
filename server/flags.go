@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/easylab-platform/easysidecar/relay"
@@ -80,6 +81,9 @@ type Config struct {
 	// (default 0.0.0.0:15053). Empty disables UDP capture (UDP is then only
 	// subject to the filter policy).
 	CaptureUDPAddr string
+	// CaptureTCPPorts are the destination ports proxied as web (HTTP/h2c
+	// transparent). Others are captured but only logged and spliced raw.
+	CaptureTCPPorts []int
 	// CaptureUDPAllow lists manually-allowed UDP endpoints ("host" or "cidr",
 	// optionally ":port"). UDP to them passes unmodified.
 	CaptureUDPAllow []string
@@ -114,6 +118,7 @@ func ParseFlags() (*Config, error) {
 	uids := flag.String("capture-uids", "", "capture mode: comma-separated UIDs exempt from redirection (default: the sidecar's own UID)")
 	forwardAddr := flag.String("capture-forward-addr", "", "capture mode: listener for forwarded (VM guest) TCP; non-empty enables PREROUTING/FORWARD rules")
 	udpAddr := flag.String("capture-udp-addr", "0.0.0.0:15053", "capture mode: listener for non-DNS redirected UDP datagrams")
+	tcpPorts := flag.String("capture-tcp-ports", "80,443", "capture mode: destination ports proxied as web (HTTP/h2c)")
 	udpAllow := flag.String("capture-udp-allow", "", "capture mode: comma-separated UDP endpoints that always pass (host[:port] or cidr[:port])")
 	flag.StringVar(&cfg.CaptureUDPMode, "capture-udp-mode", "log", "capture mode: policy for non-DNS/h3 UDP: log|reject")
 	flag.StringVar(&cfg.CaptureDefaultMode, "capture-default-mode", "log", "capture mode: policy for other egress (ICMP/raw): log|reject")
@@ -124,6 +129,7 @@ func ParseFlags() (*Config, error) {
 	cfg.CaptureExemptCIDRs = splitCSV(*exempt)
 	cfg.CaptureForwardAddr = *forwardAddr
 	cfg.CaptureUDPAddr = *udpAddr
+	cfg.CaptureTCPPorts = parsePorts(*tcpPorts)
 
 	if cfg.Mode == "" {
 		cfg.Mode = ModeProxy
@@ -184,6 +190,21 @@ func hostPort(s string) string {
 		return strings.TrimSuffix(rest, "/")
 	}
 	return strings.TrimSuffix(s, "/")
+}
+
+// parsePorts parses a comma-separated port list, ignoring invalid entries.
+func parsePorts(s string) []int {
+	var out []int
+	for _, p := range strings.Split(s, ",") {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if n, err := strconv.Atoi(p); err == nil && n > 0 && n < 65536 {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // splitCSV trims and drops empties from a comma-separated flag value.

@@ -1,7 +1,6 @@
 package relay
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -13,8 +12,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"golang.org/x/net/http2"
 
 	"github.com/easylab-platform/easysidecar/capture"
 	"github.com/easylab-platform/easysidecar/logging"
@@ -34,6 +31,7 @@ type SpoofTCP struct {
 	Decider       *rule.Decider
 	MITM          *mitm.MITM
 	UpstreamProxy string // optional HTTP proxy for DIRECT egress (mihomo)
+	ProxyURL      string // scheme://host:port form of UpstreamProxy for the web face
 	Logger        *logging.ConnLogger
 	// Mark stamps SO_MARK on the face's own upstream sockets. It is set when
 	// the capture redirect is active (capture+dns mode): without it the spoof
@@ -211,7 +209,13 @@ func rewriteRelayConnDial(c net.Conn, r io.Reader, rl *rule.Rule, host string, e
 		return
 	}
 	defer func() { _ = tlsSrv.Close() }()
-	if err := serveRewrittenConn(tlsSrv, buildRewriteProxy(rl, host, "https", dialCtx)); err != nil {
+	logFn := func(req *http.Request, status int) {
+		logger.Log(logging.ConnLogEntry{
+			Host: host, Dst: e.Dst, Action: "rewrite", Rule: firstMatch(rule.Decision{Rule: rl}),
+			Method: req.Method, Path: req.URL.RequestURI(), Status: status,
+		})
+	}
+	if err := serveRewrittenConn(tlsSrv, buildRewriteProxy(rl, host, "https", dialCtx, logFn)); err != nil {
 		e.Err = err.Error()
 		logger.Log(e)
 	}
@@ -233,7 +237,7 @@ func rewriteRelayConnDial(c net.Conn, r io.Reader, rl *rule.Rule, host string, e
 // (see artifactkit's host allow-list), so a hostile client cannot point the
 // mirror at an arbitrary origin.
 func (s *SpoofTCP) rewriteProxy(rl *rule.Rule, host, origScheme string) *httputil.ReverseProxy {
-	return buildRewriteProxy(rl, host, origScheme, s.markedDialContext())
+	return buildRewriteProxy(rl, host, origScheme, s.markedDialContext(), nil)
 }
 
 // markedDialContext returns the transport dialer for the spoof face: in
@@ -251,7 +255,7 @@ func (s *SpoofTCP) markedDialContext() func(ctx context.Context, network, addr s
 // proxies. dialCtx is the transport dialer (nil uses net/http's default); the
 // capture face passes a SO_MARK-stamping dialer so the proxy's own upstream
 // dials are not redirected back into the sidecar.
-func buildRewriteProxy(rl *rule.Rule, host, origScheme string, dialCtx func(ctx context.Context, network, addr string) (net.Conn, error)) *httputil.ReverseProxy {
+func buildRewriteProxy(rl *rule.Rule, host, origScheme string, dialCtx func(ctx context.Context, network, addr string) (net.Conn, error), log func(*http.Request, int)) *httputil.ReverseProxy {
 	scheme, addr := parseTarget(rl.Target)
 	transport := &http.Transport{}
 	if dialCtx != nil {
@@ -275,7 +279,16 @@ func buildRewriteProxy(rl *rule.Rule, host, origScheme string, dialCtx func(ctx 
 				req.Header.Del("X-Forwarded-Prefix")
 			}
 		},
-		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
+		ModifyResponse: func(resp *http.Response) error {
+			if log != nil {
+				log(resp.Request, resp.StatusCode)
+			}
+			return nil
+		},
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, _ error) {
+			if log != nil {
+				log(r, http.StatusBadGateway)
+			}
 			w.WriteHeader(http.StatusBadGateway)
 		},
 	}
@@ -299,15 +312,14 @@ func (s *SpoofTCP) serveRewritten(conn net.Conn, rl *rule.Rule, host, origScheme
 // it); an *http.Server only speaks HTTP/1.1, so h2 connections are handed to
 // an http2.Server and everyone else keeps the HTTP/1.1 path.
 func serveRewrittenConn(conn net.Conn, rp *httputil.ReverseProxy) error {
-	if tc, ok := conn.(*tls.Conn); ok {
-		if tc.ConnectionState().NegotiatedProtocol == "h2" {
-			h2 := &http2.Server{}
-			h2.ServeConn(conn, &http2.ServeConnOpts{Handler: rp})
-			return nil
-		}
-	}
+	return serveWebConn(conn, rp, false)
+}
+
+// serveHTTP1Conn runs an http.Handler over one connection using the HTTP/1.1
+// server (the non-h2 path of serveWebConn).
+func serveHTTP1Conn(conn net.Conn, h http.Handler) error {
 	ln := newSingleConnListener(conn)
-	srv := &http.Server{Handler: rp, ReadHeaderTimeout: 30 * time.Second}
+	srv := &http.Server{Handler: h, ReadHeaderTimeout: 30 * time.Second}
 	err := srv.Serve(ln)
 	if err == nil || errors.Is(err, net.ErrClosed) || errors.Is(err, http.ErrServerClosed) {
 		return nil
@@ -467,44 +479,22 @@ func (s *SpoofTCP) dialEgress(addr string, e logging.ConnLogEntry) (net.Conn, er
 	return &bufferedConn{Conn: conn, r: br.rest()}, nil
 }
 
-// handleHTTP handles plain-HTTP requests to the sidecar (Host-based
-// classification). Only useful for rewrite/block of non-TLS traffic.
+// handleHTTP handles plain-HTTP (and h2c) requests to the sidecar. The sidecar
+// was dialed directly, so each request is classified by its Host/:authority and
+// proxied per request (rewrite or transparent-direct), with method/path/status
+// logged.
 func (s *SpoofTCP) handleHTTP(c net.Conn) {
 	defer func() { _ = c.Close() }()
-	br := newHeaderReader(c)
-	host, err := br.readHost()
-	if err != nil {
-		return
+	tr := newTLSReader(c)
+	_, _, _ = tr.sni() // plaintext: errNotTLS, bytes buffered for replay
+	replay := &bufferedConn{Conn: c, r: tr.replay()}
+	face := &webFace{
+		scheme: "http", spoof: true,
+		decider: s.Decider, dialCtx: s.markedDialContext(), proxyURL: s.ProxyURL, logger: s.Logger,
 	}
-	dec := s.Decider.Decide(host, "")
-	e := logging.ConnLogEntry{Host: host, Dst: c.RemoteAddr().String(), Action: string(dec.Action)}
-	switch dec.Action {
-	case rule.ActionBlock:
-		s.Logger.Log(e)
-		resetConn(c)
-	case rule.ActionRewrite:
-		// Run a full HTTP/1.1 proxy over the (plain) connection so every
-		// request on a keep-alive connection gets its path mapped. The head
-		// already consumed by readHost is replayed ahead of the rest.
-		// Log at classification time (a keep-alive relay may stay open).
-		e.Action = "rewrite"
-		e.Rule = firstMatch(dec)
-		s.Logger.Log(e)
-		replay := io.MultiReader(bytes.NewReader(br.buf), br.br)
-		if err := s.serveRewritten(&bufferedConn{Conn: c, r: replay}, dec.Rule, host, "http"); err != nil {
-			s.Logger.Log(logging.ConnLogEntry{Host: host, Dst: e.Dst, Action: "rewrite", Err: err.Error()})
-		}
-	case rule.ActionDirect:
-		up, err := s.dialEgress(net.JoinHostPort(host, "80"), e)
-		if err != nil {
-			s.Logger.Log(e)
-			return
-		}
-		defer func() { _ = up.Close() }()
-		if _, err := up.Write(br.bufferedAll()); err != nil {
-			return
-		}
-		_ = logging.Relay(c, up, s.Logger, e)
+	isH2 := isH2CPreface(tr.buffered())
+	if err := serveWebConn(replay, face.handler(), isH2); err != nil {
+		s.Logger.Log(logging.ConnLogEntry{Dst: c.RemoteAddr().String(), Action: "web", Err: err.Error()})
 	}
 }
 

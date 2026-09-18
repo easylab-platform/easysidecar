@@ -29,7 +29,12 @@ type CaptureTCP struct {
 	Decider       *rule.Decider
 	MITM          *mitm.MITM
 	UpstreamProxy string
-	Logger        *logging.ConnLogger
+	ProxyURL      string // scheme://host:port form for the web face's direct proxy
+	// WebPorts are the ports proxied as web (HTTP/h2c transparent). A port not
+	// in the set is still captured, but only logged and spliced raw. TLS is
+	// classified by SNI on every port.
+	WebPorts map[int]bool
+	Logger   *logging.ConnLogger
 	// Mark stamps SO_MARK on the sidecar's own upstream sockets so the nat
 	// chain's mark RETURN exempts them from the redirect (no self-loop). Zero
 	// disables marking.
@@ -79,20 +84,18 @@ func (s *CaptureTCP) handle(c net.Conn) {
 		e.Host = host
 		s.decideAndAct(c, host, origPort, tr, e)
 
-	case serr == errNotTLS && looksLikeHTTP(tr.buffered()):
-		// Plain HTTP: read the request head from the replay so the client's
-		// bytes are not lost, then classify by Host.
-		base := &bufferedConn{Conn: c, r: tr.replay()}
-		br := newHeaderReader(base)
-		if h, herr := br.readHost(); herr == nil {
-			host = h
-		}
-		e.Host = host
-		s.handleCapturedHTTP(c, br, host, origPort, e)
+	case serr == errNotTLS && s.isWebPort(origPort) && isH2CPreface(tr.buffered()):
+		// Cleartext HTTP/2 (prior knowledge). The per-request handler reads
+		// the :authority pseudo-header, so classification is per request.
+		s.handleWeb(c, host, origPort, tr, true, e)
+
+	case serr == errNotTLS && s.isWebPort(origPort) && looksLikeHTTP(tr.buffered()):
+		// Plain HTTP/1.1. Same per-request handler.
+		s.handleWeb(c, host, origPort, tr, false, e)
 
 	default:
-		// TLS without SNI, or a non-HTTP protocol: classify by the original
-		// destination address and splice raw.
+		// TLS without SNI, or a non-web protocol: classify by the original
+		// destination address and splice raw (logged, not proxied).
 		e.Host = host
 		dec := s.Decider.Decide(host, "")
 		switch dec.Action {
@@ -115,6 +118,30 @@ func (s *CaptureTCP) handle(c net.Conn) {
 			e.Action = "direct"
 			s.passthrough(c, host, origPort, tr, e)
 		}
+	}
+}
+
+// isWebPort reports whether a destination port is proxied as web. An empty set
+// means the default {80, 443}.
+func (s *CaptureTCP) isWebPort(port int) bool {
+	if len(s.WebPorts) == 0 {
+		return port == 80 || port == 443
+	}
+	return s.WebPorts[port]
+}
+
+// handleWeb proxies a plaintext HTTP/1.1 or h2c connection through the shared
+// web face: every request is classified by its Host/:authority and either
+// rewritten to the rule target or transparently forwarded to the original
+// destination. Both paths log method/path/status.
+func (s *CaptureTCP) handleWeb(c net.Conn, origHost string, origPort int, tr *tlsReader, isH2 bool, e logging.ConnLogEntry) {
+	replay := &bufferedConn{Conn: c, r: tr.replay()}
+	face := &webFace{
+		origHost: origHost, origPort: origPort, scheme: "http",
+		decider: s.Decider, dialCtx: s.markedDialContext(), proxyURL: s.ProxyURL, logger: s.Logger,
+	}
+	if err := serveWebConn(replay, face.handler(), isH2); err != nil {
+		s.Logger.Log(logging.ConnLogEntry{Dst: e.Dst, Action: "web", Err: err.Error()})
 	}
 }
 
@@ -154,43 +181,6 @@ func (s *CaptureTCP) decideAndAct(c net.Conn, host string, port int, tr *tlsRead
 	}
 }
 
-// handleCapturedHTTP classifies a captured plain-HTTP connection. br holds the
-// consumed request head (and any buffered body); the raw conn is c.
-func (s *CaptureTCP) handleCapturedHTTP(c net.Conn, br *headerReader, host string, port int, e logging.ConnLogEntry) {
-	dec := s.Decider.Decide(host, "")
-	switch dec.Action {
-	case rule.ActionBlock:
-		e.Action = "block"
-		e.Rule = firstMatch(dec)
-		s.Logger.Log(e)
-		resetConn(c)
-	case rule.ActionRewrite:
-		e.Action = "rewrite"
-		e.Rule = firstMatch(dec)
-		s.Logger.Log(e)
-		replay := &bufferedConn{Conn: c, r: io.MultiReader(bytes.NewReader(br.buf), br.br)}
-		if err := s.serveRewritten(replay, dec.Rule, host, "http"); err != nil {
-			s.Logger.Log(logging.ConnLogEntry{Host: host, Dst: e.Dst, Action: "rewrite", Err: err.Error()})
-		}
-	case rule.ActionDirect:
-		e.Action = "direct"
-		e.Rule = firstMatch(dec)
-		up, err := s.dialEgress(net.JoinHostPort(host, strconv.Itoa(port)), e)
-		if err != nil {
-			s.Logger.Log(e)
-			_ = c.Close()
-			return
-		}
-		defer func() { _ = up.Close() }()
-		if _, err := up.Write(br.bufferedAll()); err != nil {
-			e.Err = err.Error()
-			s.Logger.Log(e)
-			return
-		}
-		_ = logging.Relay(c, up, s.Logger, e)
-	}
-}
-
 // passthrough splices a stream to its original destination (or via the
 // upstream proxy when configured), replaying the ClientHello/peeked bytes read
 // during classification.
@@ -220,12 +210,6 @@ func (s *CaptureTCP) rewriteRelay(c net.Conn, r io.Reader, rl *rule.Rule, host s
 
 func (s *CaptureTCP) mitmRelay(c net.Conn, r io.Reader, host string, e logging.ConnLogEntry) {
 	mitmRelayConn(c, r, host, e, s.MITM, s.dialEgress, s.Logger)
-}
-
-// serveRewritten runs the reverse proxy over one captured connection (plain
-// HTTP here; h2 detection only applies when the conn is a *tls.Conn).
-func (s *CaptureTCP) serveRewritten(conn net.Conn, rl *rule.Rule, host, origScheme string) error {
-	return serveRewrittenConn(conn, buildRewriteProxy(rl, host, origScheme, s.markedDialContext()))
 }
 
 // markedDialContext returns the transport dialer for the capture face: every

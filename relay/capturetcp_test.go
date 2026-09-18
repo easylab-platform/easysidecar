@@ -31,7 +31,7 @@ func TestBuildRewriteProxyCarriesDialer(t *testing.T) {
 		return net.Dial(network, addr)
 	}
 	rp := buildRewriteProxy(&rule.Rule{Target: "gw:80", AddPrefix: "/pkgs/npm"},
-		"registry.npmjs.org", "https", dial)
+		"registry.npmjs.org", "https", dial, nil)
 	tr, ok := rp.Transport.(*http.Transport)
 	if !ok {
 		t.Fatalf("transport type = %T", rp.Transport)
@@ -44,7 +44,7 @@ func TestBuildRewriteProxyCarriesDialer(t *testing.T) {
 // TestBuildRewriteProxyDefaultDialer verifies the spoof face keeps net/http's
 // default dialer when none is supplied.
 func TestBuildRewriteProxyDefaultDialer(t *testing.T) {
-	rp := buildRewriteProxy(&rule.Rule{Target: "gw:80"}, "pypi.org", "https", nil)
+	rp := buildRewriteProxy(&rule.Rule{Target: "gw:80"}, "pypi.org", "https", nil, nil)
 	tr := rp.Transport.(*http.Transport)
 	if tr.DialContext != nil {
 		t.Fatal("nil dialer must leave the transport default in place")

@@ -22,7 +22,9 @@ func NewConnLogger() *ConnLogger {
 	return l
 }
 
-// ConnLogEntry is one classified connection.
+// ConnLogEntry is one classified connection. For HTTP flows it also carries
+// the request line (method/path) and response status, so plaintext traffic is
+// auditable at the request level.
 type ConnLogEntry struct {
 	TS     string `json:"ts"`
 	Host   string `json:"host,omitempty"`
@@ -30,6 +32,9 @@ type ConnLogEntry struct {
 	Action string `json:"action"`
 	Rule   string `json:"rule,omitempty"` // first match pattern
 	Mitm   bool   `json:"mitm,omitempty"`
+	Method string `json:"method,omitempty"`
+	Path   string `json:"path,omitempty"`
+	Status int    `json:"status,omitempty"`
 	Bytes  int64  `json:"bytes"`
 	Err    string `json:"err,omitempty"`
 }

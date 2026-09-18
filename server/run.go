@@ -148,9 +148,14 @@ func runSpoof(cfg *Config, decisions *rule.Decider, m *mitm.MITM, logger *loggin
 // there for the connection to be served. Publicly-resolvable names still take
 // the capture path (real IP -> redirect -> SO_ORIGINAL_DST).
 func runCapture(cfg *Config, decisions *rule.Decider, m *mitm.MITM, logger *logging.ConnLogger) error {
+	webPorts := map[int]bool{}
+	for _, p := range cfg.CaptureTCPPorts {
+		webPorts[p] = true
+	}
 	tcp := &relay.CaptureTCP{
 		Addr: cfg.CaptureAddr, Decider: decisions, MITM: m,
-		UpstreamProxy: cfg.UpstreamProxy, Logger: logger, Mark: capture.Mark,
+		UpstreamProxy: cfg.UpstreamProxy, ProxyURL: cfg.UpstreamProxy,
+		WebPorts: webPorts, Logger: logger, Mark: capture.Mark,
 	}
 	logger.Log(logging.ConnLogEntry{Action: "info", Dst: "capture mode: listen=" + cfg.CaptureAddr +
 		" egress-proxy=" + cfg.UpstreamProxy + " dns-assist=" + boolStr(cfg.CaptureDNS) +
@@ -169,7 +174,8 @@ func runCapture(cfg *Config, decisions *rule.Decider, m *mitm.MITM, logger *logg
 		// same face serves them on a second listener.
 		fwd := &relay.CaptureTCP{
 			Addr: cfg.CaptureForwardAddr, Decider: decisions, MITM: m,
-			UpstreamProxy: cfg.UpstreamProxy, Logger: logger, Mark: capture.Mark,
+			UpstreamProxy: cfg.UpstreamProxy, ProxyURL: cfg.UpstreamProxy,
+			WebPorts: webPorts, Logger: logger, Mark: capture.Mark,
 		}
 		servers = append(servers, fwd.Serve)
 	}
@@ -182,8 +188,8 @@ func runCapture(cfg *Config, decisions *rule.Decider, m *mitm.MITM, logger *logg
 		}
 		spoof := &relay.SpoofTCP{
 			TLSAddr: cfg.SpoofTLSAddr, HTTPAddr: cfg.SpoofHTTPAddr,
-			Decider: decisions, MITM: m, UpstreamProxy: cfg.UpstreamProxy, Logger: logger,
-			Mark: capture.Mark,
+			Decider: decisions, MITM: m, UpstreamProxy: cfg.UpstreamProxy, ProxyURL: cfg.UpstreamProxy,
+			Logger: logger, Mark: capture.Mark,
 		}
 		servers = append(servers, srv.Serve, spoof.Serve)
 	}
