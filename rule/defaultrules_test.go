@@ -69,7 +69,16 @@ func TestDefaultRulesYAMLShape(t *testing.T) {
 	if !strings.Contains(y, `"ghcr.io"`) || !strings.Contains(y, `"quay.io"`) {
 		t.Fatalf("public registry rule missing:\n%s", y)
 	}
-	if strings.Contains(y, "@@") || strings.Contains(y, "/pkgs/") {
-		t.Fatal("targets must be bare host:port (routing is by preserved Host)")
+	// Targets are bare host:port (routing is by preserved Host). add_prefix may
+	// carry /pkgs/..., but the target line must not.
+	for _, line := range strings.Split(y, "\n") {
+		if strings.Contains(line, "target:") && strings.Contains(line, "/pkgs/") {
+			t.Fatalf("target must be bare host:port, got %q", line)
+		}
+	}
+	// A path-shaped mirror emits strip/add.
+	if !strings.Contains(y, `strip_prefix: "/dl/android/maven2"`) ||
+		!strings.Contains(y, `add_prefix: "/pkgs/maven"`) {
+		t.Fatalf("google maven strip/add missing:\n%s", y)
 	}
 }

@@ -13,10 +13,16 @@ import (
 
 // upstreamDomain describes one package-manager upstream: the domains whose
 // traffic must be steered into easylab. The gateway routes by the preserved
-// Host header, so no per-ecosystem path is needed here.
+// Host header, so no per-ecosystem path is needed here — except for mirrors
+// whose path shape differs from the adapter's mount (Strip/Add).
 type upstreamDomain struct {
 	// Match are the hostname patterns (exact / *.suffix / bare suffix).
 	Match []string
+	// Strip is a leading path prefix removed before Add is applied (e.g. the
+	// Google Maven host serves the repo under /dl/android/maven2).
+	Strip string
+	// Add is the adapter mount prepended after Strip (e.g. /pkgs/maven).
+	Add string
 }
 
 // defaultUpstreams mirrors easylab's artifactkit upstream table: one entry
@@ -35,10 +41,19 @@ var defaultUpstreams = []upstreamDomain{
 	{Match: []string{"production.cloudflare.docker.com", "*.cloudflarestorage.com"}},
 	// Language registries.
 	{Match: []string{"registry.npmjs.org", "*.npmjs.org"}},
+	// JSR's npm-compatibility registry (deno/bun/npm resolve @jsr/* here).
+	{Match: []string{"npm.jsr.io"}, Add: "/pkgs/npm"},
 	{Match: []string{"pypi.org", "files.pythonhosted.org"}},
 	{Match: []string{"proxy.golang.org", "sum.golang.org"}},
 	{Match: []string{"crates.io", "index.crates.io", "static.crates.io"}},
 	{Match: []string{"repo.maven.apache.org"}},
+	// Maven-layout mirrors: the maven adapter serves them host-driven, so the
+	// mirror's path prefix is stripped before the /pkgs/maven mount.
+	{Match: []string{"dl.google.com"}, Strip: "/dl/android/maven2", Add: "/pkgs/maven"},
+	{Match: []string{"plugins.gradle.org"}, Strip: "/m2", Add: "/pkgs/maven"},
+	{Match: []string{"repo.clojars.org"}, Add: "/pkgs/maven"},
+	{Match: []string{"repo.spring.io"}, Strip: "/release", Add: "/pkgs/maven"},
+	{Match: []string{"jitpack.io"}, Add: "/pkgs/maven"},
 	{Match: []string{"api.nuget.org", "azuresearch-usnc.nuget.org"}},
 	{Match: []string{"rubygems.org", "index.rubygems.org"}},
 	{Match: []string{"repo.packagist.org"}},
@@ -68,6 +83,14 @@ var defaultUpstreams = []upstreamDomain{
 	{Match: []string{"cpan.metacpan.org"}},
 	{Match: []string{"luarocks.org"}},
 	{Match: []string{"pkg.julialang.org", "*.pkg.julialang.org"}},
+	// Additional plain-HTTP trees (JSR native, opam, Stackage, PECL, Bazel BCR,
+	// Jenkins update center).
+	{Match: []string{"jsr.io"}, Add: "/pkgs/jsr"},
+	{Match: []string{"opam.ocaml.org"}, Add: "/pkgs/opam"},
+	{Match: []string{"stackage.org"}, Add: "/pkgs/stackage"},
+	{Match: []string{"pecl.php.net"}, Add: "/pkgs/pecl"},
+	{Match: []string{"bcr.bazel.build"}, Add: "/pkgs/bazel"},
+	{Match: []string{"updates.jenkins.io"}, Add: "/pkgs/jenkins"},
 }
 
 // DefaultRulesYAML renders the built-in rule set with the given gateway
@@ -84,6 +107,12 @@ func DefaultRulesYAML(gatewayHostPort string) string {
 		b.WriteString("  - match: [" + quoteList(u.Match) + "]\n")
 		b.WriteString("    action: rewrite\n")
 		b.WriteString("    target: \"" + gatewayHostPort + "\"\n")
+		if u.Strip != "" {
+			b.WriteString("    strip_prefix: \"" + u.Strip + "\"\n")
+		}
+		if u.Add != "" {
+			b.WriteString("    add_prefix: \"" + u.Add + "\"\n")
+		}
 	}
 	b.WriteString("default: direct\n")
 	b.WriteString("mitm_default: false\n")
