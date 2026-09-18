@@ -30,7 +30,7 @@ func TestBuildRewriteProxyCarriesDialer(t *testing.T) {
 	dial := func(ctx context.Context, network, addr string) (net.Conn, error) {
 		return net.Dial(network, addr)
 	}
-	rp := buildRewriteProxy(&rule.Rule{Target: "gw:80", AddPrefix: "/pkgs/npm"},
+	rp := buildRewriteProxy(&rule.Rule{Target: "gw:80", AddPrefix: "/artifacts/npm"},
 		"registry.npmjs.org", "https", dial, nil)
 	tr, ok := rp.Transport.(*http.Transport)
 	if !ok {

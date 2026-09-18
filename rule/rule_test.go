@@ -112,10 +112,10 @@ func TestMapPath(t *testing.T) {
 	}{
 		{"strip add", "/v2", "/v2/docker.io", "/v2/nginx/manifests/latest", "/v2/docker.io/nginx/manifests/latest"},
 		{"strip only", "/proxy", "", "/proxy/dist/app.js", "/dist/app.js"},
-		{"add npm", "", "/pkgs/npm", "/react", "/pkgs/npm/react"},
-		{"add pypi", "", "/pkgs/pypi", "/simple/requests/", "/pkgs/pypi/simple/requests/"},
+		{"add npm", "", "/artifacts/npm", "/react", "/artifacts/npm/react"},
+		{"add pypi", "", "/artifacts/pypi", "/simple/requests/", "/artifacts/pypi/simple/requests/"},
 		{"strip boundary no match", "/v2", "", "/v20/foo", "/v20/foo"},
-		{"strip exact root", "/pkgs", "", "/pkgs", "/"},
+		{"strip exact root", "/artifacts", "", "/artifacts", "/"},
 		{"strip trailing slash", "/api/", "", "/api/x", "/x"},
 		{"noop", "", "", "/a/b", "/a/b"},
 	}

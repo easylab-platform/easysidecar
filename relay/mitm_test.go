@@ -57,7 +57,7 @@ func TestRewriteHostPreserved(t *testing.T) {
 
 	c := spoofTLS(t, ln.Addr().String(), "registry.npmjs.org", caPEM)
 	defer func() { _ = c.Close() }()
-	if _, err := c.Write([]byte("GET /pkgs/npm/react HTTP/1.1\r\nHost: registry.npmjs.org\r\nConnection: close\r\n\r\n")); err != nil {
+	if _, err := c.Write([]byte("GET /artifacts/npm/react HTTP/1.1\r\nHost: registry.npmjs.org\r\nConnection: close\r\n\r\n")); err != nil {
 		t.Fatal(err)
 	}
 	_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))

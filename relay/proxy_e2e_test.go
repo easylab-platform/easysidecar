@@ -51,7 +51,7 @@ rules:
   - match: ["pkgs.example"]
     action: rewrite
     target: "` + stripScheme(rewrite.URL) + `"
-    add_prefix: "/pkgs/npm"
+    add_prefix: "/artifacts/npm"
   - match: ["blocked.example"]
     action: block
 default: direct
@@ -191,7 +191,7 @@ func TestSpoofE2ERewriteAddPrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 	body, _ := io.ReadAll(resp.Body)
-	if string(body) != "REWRITTEN-pkgs.example/pkgs/npm/react" {
+	if string(body) != "REWRITTEN-pkgs.example/artifacts/npm/react" {
 		t.Fatalf("body = %q", body)
 	}
 }
@@ -213,7 +213,7 @@ func TestSpoofE2ERewriteKeepAlive(t *testing.T) {
 		}
 		body, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
-		want := "REWRITTEN-pkgs.example/pkgs/npm" + path
+		want := "REWRITTEN-pkgs.example/artifacts/npm" + path
 		if string(body) != want {
 			t.Fatalf("req %d body = %q want %q", i, body, want)
 		}

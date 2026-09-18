@@ -69,7 +69,7 @@ First match wins; the default applies otherwise.
 
 A `rewrite` rule may carry `strip_prefix` / `add_prefix` to map the upstream
 path shape onto the gateway's mount (`charts.helm.sh/stable/...` →
-`/pkgs/helm/...`). The relay also sets `X-Forwarded-Host`/`-Proto`/`-Prefix`, so
+`/artifacts/helm/...`). The relay also sets `X-Forwarded-Host`/`-Proto`/`-Prefix`, so
 the gateway can reconstruct the real upstream without a per-ecosystem table.
 
 ## MITM

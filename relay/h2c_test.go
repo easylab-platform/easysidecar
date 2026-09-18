@@ -73,7 +73,7 @@ rules:
   - match: ["`+host+`"]
     action: rewrite
     target: "`+stripScheme(targetURL)+`"
-    add_prefix: "/pkgs/npm"
+    add_prefix: "/artifacts/npm"
 default: direct
 `)
 	rs, err := rule.LoadRules(p)
@@ -107,7 +107,7 @@ func TestWebFaceRewriteMapsPath(t *testing.T) {
 	}
 	body, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
-	if string(body) != "rewritten /pkgs/npm/left-pad" {
+	if string(body) != "rewritten /artifacts/npm/left-pad" {
 		t.Fatalf("body = %q", body)
 	}
 }

@@ -30,8 +30,8 @@ type Rule struct {
 	// StripPrefix removes a leading path prefix from the incoming request
 	// path before AddPrefix is applied (no-op when it does not match).
 	StripPrefix string `yaml:"strip_prefix,omitempty"`
-	// AddPrefix prepends a path prefix after stripping (e.g. "/pkgs/npm" to
-	// steer registry.npmjs.org/react → artifact/pkgs/npm/react).
+	// AddPrefix prepends a path prefix after stripping (e.g. "/artifacts/npm" to
+	// steer registry.npmjs.org/react → artifact/artifacts/npm/react).
 	AddPrefix string `yaml:"add_prefix,omitempty"`
 	// Mitm forces decryption for this rule even when MitmDefault is false
 	// (rewrite rules decrypt regardless; a block/direct rule never does).

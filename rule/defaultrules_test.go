@@ -3,6 +3,8 @@ package rule
 import (
 	"strings"
 	"testing"
+
+	"github.com/easylab-platform/artifact/targets"
 )
 
 func TestDefaultRulesYAMLParses(t *testing.T) {
@@ -28,8 +30,8 @@ func TestDefaultRulesYAMLParses(t *testing.T) {
 			}
 		}
 	}
-	if rewrites != len(defaultUpstreams) {
-		t.Fatalf("rewrite rules = %d, want %d", rewrites, len(defaultUpstreams))
+	if rewrites != len(targets.EgressPolicy()) {
+		t.Fatalf("rewrite rules = %d, want %d", rewrites, len(targets.EgressPolicy()))
 	}
 }
 
@@ -70,15 +72,15 @@ func TestDefaultRulesYAMLShape(t *testing.T) {
 		t.Fatalf("public registry rule missing:\n%s", y)
 	}
 	// Targets are bare host:port (routing is by preserved Host). add_prefix may
-	// carry /pkgs/..., but the target line must not.
+	// carry /artifacts/..., but the target line must not.
 	for _, line := range strings.Split(y, "\n") {
-		if strings.Contains(line, "target:") && strings.Contains(line, "/pkgs/") {
+		if strings.Contains(line, "target:") && strings.Contains(line, "/artifacts/") {
 			t.Fatalf("target must be bare host:port, got %q", line)
 		}
 	}
 	// A path-shaped mirror emits strip/add.
 	if !strings.Contains(y, `strip_prefix: "/dl/android/maven2"`) ||
-		!strings.Contains(y, `add_prefix: "/pkgs/maven"`) {
+		!strings.Contains(y, `add_prefix: "/artifacts/maven"`) {
 		t.Fatalf("google maven strip/add missing:\n%s", y)
 	}
 }

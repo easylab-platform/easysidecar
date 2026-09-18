@@ -9,11 +9,11 @@ import (
 )
 
 func TestRewriteTarget(t *testing.T) {
-	r := &rule.Rule{AddPrefix: "/pkgs/npm"}
+	r := &rule.Rule{AddPrefix: "/artifacts/npm"}
 	cases := []struct{ in, want string }{
-		{"/react", "/pkgs/npm/react"},
-		{"/react?write=true", "/pkgs/npm/react?write=true"},
-		{"http://registry.npmjs.org/react", "http://registry.npmjs.org/pkgs/npm/react"},
+		{"/react", "/artifacts/npm/react"},
+		{"/react?write=true", "/artifacts/npm/react?write=true"},
+		{"http://registry.npmjs.org/react", "http://registry.npmjs.org/artifacts/npm/react"},
 		{"http://registry.npmjs.org", "http://registry.npmjs.org"},
 	}
 	for _, c := range cases {
@@ -38,8 +38,8 @@ func TestHeaderReaderRewrite(t *testing.T) {
 	if host != "index.crates.io" {
 		t.Fatalf("host = %q", host)
 	}
-	out := string(br.rewrite((&rule.Rule{AddPrefix: "/pkgs/cargo"}).MapPath))
-	if !strings.Contains(out, "PUT /pkgs/cargo/crate/foo HTTP/1.1\r\n") {
+	out := string(br.rewrite((&rule.Rule{AddPrefix: "/artifacts/cargo"}).MapPath))
+	if !strings.Contains(out, "PUT /artifacts/cargo/crate/foo HTTP/1.1\r\n") {
 		t.Fatalf("request line not mapped: %q", out)
 	}
 	if !strings.Contains(out, "Host: index.crates.io\r\n") {

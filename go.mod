@@ -8,4 +8,7 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
-require golang.org/x/text v0.41.0 // indirect
+require (
+	github.com/easylab-platform/artifact/targets v0.1.0
+	golang.org/x/text v0.41.0 // indirect
+)
