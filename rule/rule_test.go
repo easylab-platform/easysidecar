@@ -166,3 +166,24 @@ func TestMatchedStrip(t *testing.T) {
 		}
 	}
 }
+
+// TestCatchAllOnlyPublicHosts locks the SSRF guard on the catch-all pattern:
+// "*" matches public DNS names but never cluster-local names, IPs or localhost,
+// so "cache everything" cannot capture in-cluster traffic.
+func TestCatchAllOnlyPublicHosts(t *testing.T) {
+	public := []string{"example.com", "cdn.vendor.net", "objects.githubusercontent.com"}
+	for _, h := range public {
+		if !MatchHost("*", h) {
+			t.Errorf("MatchHost(*, %q) = false, want true", h)
+		}
+	}
+	internal := []string{
+		"kubernetes.default.svc", "easylab", "artifact.temp.svc.cluster.local",
+		"foo.internal", "127.0.0.1", "10.0.0.5", "localhost", "::1",
+	}
+	for _, h := range internal {
+		if MatchHost("*", h) {
+			t.Errorf("MatchHost(*, %q) = true, want false", h)
+		}
+	}
+}

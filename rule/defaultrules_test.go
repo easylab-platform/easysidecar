@@ -58,7 +58,11 @@ func TestDefaultRulesCoverEcosystems(t *testing.T) {
 		"cdn-lfs.huggingface.co": true,
 		"conda.anaconda.org":     true,
 		"cache.nixos.org":        true,
-		"example.com":            false, // not an upstream: direct
+		// An arbitrary public host is covered by the catch-all (cached via
+		// netcache); cluster-local names are not.
+		"example.com":            true,
+		"kubernetes.default.svc": false,
+		"easylab":                false,
 	}
 	for host, want := range cases {
 		if got := HasUpstreamDomain(host); got != want {

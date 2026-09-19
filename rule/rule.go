@@ -2,6 +2,7 @@ package rule
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"strings"
 
@@ -169,10 +170,15 @@ func (rs *RuleSet) HasRewrite() bool {
 }
 
 // matchHost reports whether pattern matches host. Patterns are exact
-// ("registry.npmjs.org"), suffix wildcards ("*.npmjs.org"), or bare suffixes
-// ("npmjs.org" matches npmjs.org and anything under it). Matching ignores
-// case and a trailing dot.
+// ("registry.npmjs.org"), suffix wildcards ("*.npmjs.org"), bare suffixes
+// ("npmjs.org" matches npmjs.org and anything under it), or the catch-all "*"
+// which matches any PUBLIC hostname (cluster-local names, IPs and localhost are
+// excluded, so "cache everything" never captures in-cluster traffic). Matching
+// ignores case and a trailing dot.
 func MatchHost(pattern, host string) bool {
+	if pattern == "*" {
+		return IsPublicHost(host)
+	}
 	pattern = strings.ToLower(strings.TrimSuffix(pattern, "."))
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
 	if pattern == host {
@@ -185,6 +191,32 @@ func MatchHost(pattern, host string) bool {
 	// Bare suffix: host == pattern (checked above) or host ends with
 	// "."+pattern.
 	return strings.HasSuffix(host, "."+pattern)
+}
+
+// IsPublicHost mirrors the targets.IsPublicHost guard just enough to be
+// dependency-free here: a dotted DNS name that is not an IP, localhost or a
+// cluster-local suffix.
+func IsPublicHost(host string) bool {
+	h := strings.ToLower(strings.TrimSpace(host))
+	if h == "" {
+		return false
+	}
+	if hostOnly, _, err := net.SplitHostPort(h); err == nil {
+		h = hostOnly
+	}
+	h = strings.Trim(h, "[]")
+	if h == "" || h == "localhost" {
+		return false
+	}
+	if net.ParseIP(h) != nil {
+		return false
+	}
+	for _, suf := range []string{".local", ".svc", ".cluster.local", ".internal"} {
+		if strings.HasSuffix(h, suf) {
+			return false
+		}
+	}
+	return strings.Contains(h, ".")
 }
 
 // Decision is the outcome of classifying a connection.
