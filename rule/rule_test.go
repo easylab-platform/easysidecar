@@ -126,3 +126,43 @@ func TestMapPath(t *testing.T) {
 		}
 	}
 }
+
+// TestMapPathMultiStrip covers the plural form: a mirror serving the same
+// content under several prefixes (Spring's /release and /milestone) strips
+// whichever the client dialed and otherwise leaves the path alone.
+func TestMapPathMultiStrip(t *testing.T) {
+	r := &Rule{StripPrefixes: []string{"/milestone", "/release"}, AddPrefix: "/artifacts/maven"}
+	cases := map[string]string{
+		"/milestone/org/x/1/x.pom": "/artifacts/maven/org/x/1/x.pom",
+		"/release/org/x/1/x.pom":   "/artifacts/maven/org/x/1/x.pom",
+		"/org/x/1/x.pom":           "/artifacts/maven/org/x/1/x.pom",
+		"/releases/x":              "/artifacts/maven/releases/x", // boundary respected
+	}
+	for in, want := range cases {
+		if got := r.MapPath(in); got != want {
+			t.Errorf("MapPath(%q) = %q want %q", in, got, want)
+		}
+	}
+}
+
+// TestMatchedStrip covers the prefix recorded as X-Forwarded-Prefix: the
+// singular and plural forms both report the prefix that actually applied.
+func TestMatchedStrip(t *testing.T) {
+	single := &Rule{StripPrefix: "/m2"}
+	if got := single.MatchedStrip("/m2/org/x"); got != "/m2" {
+		t.Errorf("single matched = %q", got)
+	}
+	if got := single.MatchedStrip("/org/x"); got != "" {
+		t.Errorf("single non-match = %q", got)
+	}
+	multi := &Rule{StripPrefixes: []string{"/milestone", "/release"}}
+	for in, want := range map[string]string{
+		"/milestone/x": "/milestone",
+		"/release/x":   "/release",
+		"/other/x":     "",
+	} {
+		if got := multi.MatchedStrip(in); got != want {
+			t.Errorf("MatchedStrip(%q) = %q want %q", in, got, want)
+		}
+	}
+}

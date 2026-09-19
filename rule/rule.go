@@ -30,6 +30,11 @@ type Rule struct {
 	// StripPrefix removes a leading path prefix from the incoming request
 	// path before AddPrefix is applied (no-op when it does not match).
 	StripPrefix string `yaml:"strip_prefix,omitempty"`
+	// StripPrefixes is the multi-prefix form: the first one that matches the
+	// request path is removed (a mirror serving the same content under
+	// several prefixes, e.g. repo.spring.io/release and /milestone). It is
+	// mutually exclusive with StripPrefix.
+	StripPrefixes []string `yaml:"strip_prefixes,omitempty"`
 	// AddPrefix prepends a path prefix after stripping (e.g. "/artifacts/npm" to
 	// steer registry.npmjs.org/react → artifact/artifacts/npm/react).
 	AddPrefix string `yaml:"add_prefix,omitempty"`
@@ -40,19 +45,30 @@ type Rule struct {
 
 // MapPath applies the rule's strip/add prefix transform to an absolute
 // request path. Both prefixes are optional; the result always has a leading
-// slash. StripPrefix removes a leading segment boundary (exact match or
+// slash. A strip prefix removes a leading segment boundary (exact match or
 // followed by "/"), so stripping "/v2" from "/v2/foo" yields "/foo" but
-// leaves "/v20" untouched.
+// leaves "/v20" untouched. With several strips the first match wins.
 func (r *Rule) MapPath(p string) string {
-	if r.StripPrefix != "" {
-		sp := r.StripPrefix
+	for _, sp := range r.strips() {
+		if sp == "" {
+			continue
+		}
+		matched := false
 		switch {
 		case strings.HasSuffix(sp, "/"):
-			p = strings.TrimPrefix(p, sp)
+			if strings.HasPrefix(p, sp) {
+				p = p[len(sp):]
+				matched = true
+			}
 		case p == sp:
 			p = "/"
+			matched = true
 		case strings.HasPrefix(p, sp+"/"):
 			p = p[len(sp):]
+			matched = true
+		}
+		if matched {
+			break // first matching prefix wins
 		}
 	}
 	if r.AddPrefix != "" {
@@ -62,6 +78,37 @@ func (r *Rule) MapPath(p string) string {
 		p = "/" + p
 	}
 	return p
+}
+
+// strips returns the effective strip prefixes: the plural form when set, else
+// the singular.
+func (r *Rule) strips() []string {
+	if len(r.StripPrefixes) > 0 {
+		return r.StripPrefixes
+	}
+	if r.StripPrefix != "" {
+		return []string{r.StripPrefix}
+	}
+	return nil
+}
+
+// MatchedStrip returns the strip prefix that applies to p, or "" when none
+// does. It is the prefix the caller records as X-Forwarded-Prefix.
+func (r *Rule) MatchedStrip(p string) string {
+	for _, sp := range r.strips() {
+		if sp == "" {
+			continue
+		}
+		switch {
+		case strings.HasSuffix(sp, "/"):
+			if strings.HasPrefix(p, sp) {
+				return sp
+			}
+		case p == sp, strings.HasPrefix(p, sp+"/"):
+			return sp
+		}
+	}
+	return ""
 }
 
 // RuleSet is the parsed policy. First matching rule wins.

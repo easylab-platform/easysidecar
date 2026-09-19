@@ -269,12 +269,14 @@ func buildRewriteProxy(rl *rule.Rule, host, origScheme string, dialCtx func(ctx 
 		Director: func(req *http.Request) {
 			req.URL.Scheme = scheme
 			req.URL.Host = addr
+			// Capture the matched strip BEFORE MapPath rewrites the path.
+			matchedStrip := rl.MatchedStrip(req.URL.Path)
 			req.URL.Path = rl.MapPath(req.URL.Path)
 			req.Host = host // preserve the upstream's Host for adapter routing
 			req.Header.Set("X-Forwarded-Host", host)
 			req.Header.Set("X-Forwarded-Proto", origScheme)
-			if rl.StripPrefix != "" {
-				req.Header.Set("X-Forwarded-Prefix", rl.StripPrefix)
+			if matchedStrip != "" {
+				req.Header.Set("X-Forwarded-Prefix", matchedStrip)
 			} else {
 				req.Header.Del("X-Forwarded-Prefix")
 			}

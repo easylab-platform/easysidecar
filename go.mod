@@ -9,6 +9,6 @@ require (
 )
 
 require (
-	github.com/easylab-platform/artifact/targets v0.1.0
+	github.com/easylab-platform/artifact/targets v0.1.1
 	golang.org/x/text v0.41.0 // indirect
 )

@@ -20,7 +20,13 @@ func TestDefaultRulesYAMLParses(t *testing.T) {
 	if rs.MitmDefault {
 		t.Fatal("mitm_default must be false by default")
 	}
-	// Every ecosystem entry became a rewrite rule.
+	// Every non-direct policy entry becomes a rewrite rule.
+	wantRewrite := 0
+	for _, e := range targets.EgressPolicy() {
+		if !e.Direct {
+			wantRewrite++
+		}
+	}
 	rewrites := 0
 	for _, r := range rs.Rules {
 		if r.Action == ActionRewrite {
@@ -30,8 +36,8 @@ func TestDefaultRulesYAMLParses(t *testing.T) {
 			}
 		}
 	}
-	if rewrites != len(targets.EgressPolicy()) {
-		t.Fatalf("rewrite rules = %d, want %d", rewrites, len(targets.EgressPolicy()))
+	if rewrites != wantRewrite {
+		t.Fatalf("rewrite rules = %d, want %d", rewrites, wantRewrite)
 	}
 }
 
@@ -63,13 +69,12 @@ func TestDefaultRulesCoverEcosystems(t *testing.T) {
 
 func TestDefaultRulesYAMLShape(t *testing.T) {
 	y := DefaultRulesYAML("gw:80")
-	// Docker Hub (aliases folded to docker.io by the adapter) plus the public
-	// registries a client addresses by name.
-	if !strings.Contains(y, `match: ["registry-1.docker.io", "docker.io", "index.docker.io"]`) {
-		t.Fatalf("docker hub rule missing:\n%s", y)
-	}
-	if !strings.Contains(y, `"ghcr.io"`) || !strings.Contains(y, `"quay.io"`) {
-		t.Fatalf("public registry rule missing:\n%s", y)
+	// All container registries share one OCI target, so a single rule carries
+	// docker hub's aliases plus the registries a client addresses by name.
+	for _, h := range []string{"registry-1.docker.io", "docker.io", "index.docker.io", "ghcr.io", "quay.io"} {
+		if !strings.Contains(y, `"`+h+`"`) {
+			t.Fatalf("OCI registry %q missing from rule set:\n%s", h, y)
+		}
 	}
 	// Targets are bare host:port (routing is by preserved Host). add_prefix may
 	// carry /artifacts/..., but the target line must not.
@@ -82,5 +87,9 @@ func TestDefaultRulesYAMLShape(t *testing.T) {
 	if !strings.Contains(y, `strip_prefix: "/dl/android/maven2"`) ||
 		!strings.Contains(y, `add_prefix: "/artifacts/maven"`) {
 		t.Fatalf("google maven strip/add missing:\n%s", y)
+	}
+	// A mirror serving two prefixes emits the plural form.
+	if !strings.Contains(y, `strip_prefixes: ["/milestone", "/release"]`) {
+		t.Fatalf("spring multi-strip missing:\n%s", y)
 	}
 }
