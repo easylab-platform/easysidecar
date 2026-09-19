@@ -205,7 +205,7 @@ func (s *CaptureTCP) passthrough(c net.Conn, host string, port int, tr *tlsReade
 // rewriteRelay / mitmRelay delegate to the shared relay implementations so the
 // capture face behaves exactly like the spoof face once a hostname is known.
 func (s *CaptureTCP) rewriteRelay(c net.Conn, r io.Reader, rl *rule.Rule, host string, e logging.ConnLogEntry) {
-	rewriteRelayConnDial(c, r, rl, host, e, s.MITM, s.Logger, s.markedDialContext())
+	rewriteRelayConnDial(c, r, rl, host, e, s.MITM, s.Logger, s.markedDialContext(), s.Decider)
 }
 
 func (s *CaptureTCP) mitmRelay(c net.Conn, r io.Reader, host string, e logging.ConnLogEntry) {

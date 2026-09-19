@@ -39,6 +39,11 @@ type Rule struct {
 	// AddPrefix prepends a path prefix after stripping (e.g. "/artifacts/npm" to
 	// steer registry.npmjs.org/react → artifact/artifacts/npm/react).
 	AddPrefix string `yaml:"add_prefix,omitempty"`
+	// PathPrefix, when set, restricts this rule to requests whose path starts
+	// with it (segment boundary respected). It lets one host serve several
+	// targets: a rule claims only its path subtree, and other paths on the same
+	// host fall through to a later rule (typically the catch-all).
+	PathPrefix string `yaml:"path_prefix,omitempty"`
 	// Mitm forces decryption for this rule even when MitmDefault is false
 	// (rewrite rules decrypt regardless; a block/direct rule never does).
 	Mitm bool `yaml:"mitm,omitempty"`
@@ -242,9 +247,16 @@ func NewDecider(rs *RuleSet, mitmDefault bool) *Decider {
 
 // Decide classifies by hostname and (for fallback classification) the
 // original destination address.
+// Decide classifies by hostname only (connection-level: SNI, or a plain-HTTP
+// request with no path yet). Rules that declare PathPrefix are skipped here,
+// because the path is not known at connection setup; per-request callers use
+// DecidePath so path-scoped rules can match.
 func (d *Decider) Decide(host, origDstIP string) Decision {
 	for i := range d.rs.Rules {
 		r := &d.rs.Rules[i]
+		if r.PathPrefix != "" {
+			continue // path-scoped: needs DecidePath
+		}
 		for _, m := range r.Match {
 			if MatchHost(m, host) {
 				return Decision{Action: r.Action, Rule: r, Host: host}
@@ -252,6 +264,36 @@ func (d *Decider) Decide(host, origDstIP string) Decision {
 		}
 	}
 	return Decision{Action: d.rs.Default, Host: host}
+}
+
+// DecidePath classifies one HTTP request by host AND path: a rule matches when
+// its hosts match and (its PathPrefix is empty or the request path is under
+// it). This is what lets one host serve several targets — e.g. dl.google.com's
+// /dl/android/maven2 (maven) vs /android/repository (netcache): the maven rule
+// claims its prefix, and any other path falls through to the catch-all.
+func (d *Decider) DecidePath(host, path string) Decision {
+	for i := range d.rs.Rules {
+		r := &d.rs.Rules[i]
+		if r.PathPrefix != "" && !pathHasPrefix(path, r.PathPrefix) {
+			continue
+		}
+		for _, m := range r.Match {
+			if MatchHost(m, host) {
+				return Decision{Action: r.Action, Rule: r, Host: host}
+			}
+		}
+	}
+	return Decision{Action: d.rs.Default, Host: host}
+}
+
+// pathHasPrefix reports whether p is under prefix at a segment boundary ("/a"
+// matches "/a", "/a/b", but not "/ab").
+func pathHasPrefix(p, prefix string) bool {
+	prefix = strings.TrimSuffix(prefix, "/")
+	if prefix == "" {
+		return true
+	}
+	return p == prefix || strings.HasPrefix(p, prefix+"/")
 }
 
 // ShouldDecrypt reports whether the decision requires MITM.

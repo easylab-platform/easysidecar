@@ -187,3 +187,34 @@ func TestCatchAllOnlyPublicHosts(t *testing.T) {
 		}
 	}
 }
+
+// TestDecidePathScoping verifies a path-scoped rule claims only its subtree;
+// other paths on the same host fall through (to the catch-all), so one host
+// can serve several targets.
+func TestDecidePathScoping(t *testing.T) {
+	rs := &RuleSet{
+		Default: ActionDirect,
+		Rules: []Rule{
+			{Match: []string{"dl.google.com"}, Action: ActionRewrite, Target: "gw:80",
+				PathPrefix: "/dl/android/maven2", StripPrefix: "/dl/android/maven2", AddPrefix: "/artifacts/maven"},
+			{Match: []string{"*"}, Action: ActionRewrite, Target: "gw:80", AddPrefix: "/artifacts/netcache"},
+		},
+	}
+	d := NewDecider(rs, false)
+
+	// The Maven subtree hits the maven rule.
+	dec := d.DecidePath("dl.google.com", "/dl/android/maven2/org/x/x.pom")
+	if dec.Action != ActionRewrite || dec.Rule == nil || dec.Rule.AddPrefix != "/artifacts/maven" {
+		t.Fatalf("maven path: %+v", dec)
+	}
+	// An SDK path on the same host falls through to the catch-all.
+	dec = d.DecidePath("dl.google.com", "/android/repository/repository2-1.xml")
+	if dec.Action != ActionRewrite || dec.Rule == nil || dec.Rule.AddPrefix != "/artifacts/netcache" {
+		t.Fatalf("sdk path: %+v", dec)
+	}
+	// A boundary: "/dl/android/maven20" must NOT match the scoped prefix.
+	dec = d.DecidePath("dl.google.com", "/dl/android/maven20/x")
+	if dec.Rule == nil || dec.Rule.AddPrefix != "/artifacts/netcache" {
+		t.Fatalf("boundary path: %+v", dec)
+	}
+}

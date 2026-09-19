@@ -144,7 +144,7 @@ func (w *webFace) handler() http.Handler {
 		if host == "" {
 			host = w.origHost
 		}
-		dec := w.decider.Decide(host, "")
+		dec := w.decider.DecidePath(host, req.URL.Path)
 		switch dec.Action {
 		case rule.ActionBlock:
 			w.log(req, host, "block", http.StatusForbidden)

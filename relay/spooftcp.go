@@ -178,22 +178,26 @@ func mitmRelayConn(c net.Conn, r io.Reader, host string, e logging.ConnLogEntry,
 // (keep-alive) connection has its path mapped through the rule's strip/add
 // prefixes before forwarding; the original Host header is preserved.
 func (s *SpoofTCP) rewriteRelay(c net.Conn, r io.Reader, rl *rule.Rule, host string, e logging.ConnLogEntry) {
-	rewriteRelayConnDial(c, r, rl, host, e, s.MITM, s.Logger, s.markedDialContext())
+	rewriteRelayConnDial(c, r, rl, host, e, s.MITM, s.Logger, s.markedDialContext(), s.Decider)
 }
 
-// rewriteRelayConn terminates the client TLS and proxies the decrypted HTTP
+// rewriteRelay terminates the client TLS and proxies the decrypted HTTP
 // traffic to the rule target. Shared by both faces; origScheme is always
 // https here (the capture face reaches plain HTTP through handleCapturedHTTP).
 func rewriteRelayConn(c net.Conn, r io.Reader, rl *rule.Rule, host string, e logging.ConnLogEntry,
 	m *mitm.MITM, logger *logging.ConnLogger) {
-	rewriteRelayConnDial(c, r, rl, host, e, m, logger, nil)
+	rewriteRelayConnDial(c, r, rl, host, e, m, logger, nil, nil)
 }
 
 // rewriteRelayConnDial is rewriteRelayConn with an optional transport dialer
-// (the capture face supplies a marked dialer).
+// (the capture face supplies a marked dialer) and an optional decider. When a
+// decider is present the rule is re-resolved PER REQUEST by path, so one
+// keep-alive connection can carry requests for several path-scoped targets on
+// the same host.
 func rewriteRelayConnDial(c net.Conn, r io.Reader, rl *rule.Rule, host string, e logging.ConnLogEntry,
 	m *mitm.MITM, logger *logging.ConnLogger,
-	dialCtx func(ctx context.Context, network, addr string) (net.Conn, error)) {
+	dialCtx func(ctx context.Context, network, addr string) (net.Conn, error),
+	decider *rule.Decider) {
 	tlsCfg, err := m.TLSConfigFor(host)
 	if err != nil {
 		e.Err = err.Error()
@@ -211,14 +215,35 @@ func rewriteRelayConnDial(c net.Conn, r io.Reader, rl *rule.Rule, host string, e
 	defer func() { _ = tlsSrv.Close() }()
 	logFn := func(req *http.Request, status int) {
 		logger.Log(logging.ConnLogEntry{
-			Host: host, Dst: e.Dst, Action: "rewrite", Rule: firstMatch(rule.Decision{Rule: rl}),
+			Host: host, Dst: e.Dst, Action: "rewrite",
+			Rule:   resolvedRuleName(decider, rl, host, req.URL.Path),
 			Method: req.Method, Path: req.URL.RequestURI(), Status: status,
 		})
 	}
-	if err := serveRewrittenConn(tlsSrv, buildRewriteProxy(rl, host, "https", dialCtx, logFn)); err != nil {
+	rp := buildRewriteProxy(rl, host, "https", dialCtx, logFn)
+	if decider != nil {
+		rp = buildRewriteProxyResolve(host, "https", dialCtx, logFn, func(p string) *rule.Rule {
+			if d := decider.DecidePath(host, p); d.Action == rule.ActionRewrite && d.Rule != nil {
+				return d.Rule
+			}
+			return rl
+		})
+	}
+	if err := serveRewrittenConn(tlsSrv, rp); err != nil {
 		e.Err = err.Error()
 		logger.Log(e)
 	}
+}
+
+// resolvedRuleName returns the rule label for a request (per-path when a
+// decider is available, else the connection rule).
+func resolvedRuleName(decider *rule.Decider, fallback *rule.Rule, host, path string) string {
+	if decider != nil {
+		if d := decider.DecidePath(host, path); d.Action == rule.ActionRewrite && d.Rule != nil {
+			return firstMatch(d)
+		}
+	}
+	return firstMatch(rule.Decision{Rule: fallback})
 }
 
 // rewriteProxy builds the request-rewriting reverse proxy shared by the
@@ -256,19 +281,30 @@ func (s *SpoofTCP) markedDialContext() func(ctx context.Context, network, addr s
 // capture face passes a SO_MARK-stamping dialer so the proxy's own upstream
 // dials are not redirected back into the sidecar.
 func buildRewriteProxy(rl *rule.Rule, host, origScheme string, dialCtx func(ctx context.Context, network, addr string) (net.Conn, error), log func(*http.Request, int)) *httputil.ReverseProxy {
-	scheme, addr := parseTarget(rl.Target)
+	return buildRewriteProxyResolve(host, origScheme, dialCtx, log, func(string) *rule.Rule { return rl })
+}
+
+// buildRewriteProxyResolve builds a rewrite proxy that chooses the rule PER
+// REQUEST via resolve(path). A connection-level decision (by SNI) cannot see a
+// request's path, so one connection may carry requests for several path-scoped
+// targets on the same host (dl.google.com's /dl/android/maven2 vs
+// /android/repository); resolve re-decides by path so each request lands on the
+// right target. resolve must never return nil.
+func buildRewriteProxyResolve(host, origScheme string, dialCtx func(ctx context.Context, network, addr string) (net.Conn, error), log func(*http.Request, int), resolve func(path string) *rule.Rule) *httputil.ReverseProxy {
 	transport := &http.Transport{}
 	if dialCtx != nil {
 		transport.DialContext = dialCtx
 	}
-	if scheme == "https" {
-		transport.TLSClientConfig = &tls.Config{ServerName: hostOf(addr)}
-	}
 	return &httputil.ReverseProxy{
 		Transport: transport,
 		Director: func(req *http.Request) {
+			rl := resolve(req.URL.Path)
+			scheme, addr := parseTarget(rl.Target)
 			req.URL.Scheme = scheme
 			req.URL.Host = addr
+			if scheme == "https" {
+				transport.TLSClientConfig = &tls.Config{ServerName: hostOf(addr)}
+			}
 			// Capture the matched strip BEFORE MapPath rewrites the path.
 			matchedStrip := rl.MatchedStrip(req.URL.Path)
 			req.URL.Path = rl.MapPath(req.URL.Path)
