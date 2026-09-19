@@ -1,5 +1,5 @@
-github.com/easylab-platform/artifact/targets v0.1.2 h1:Dsubwn/dlLJRfCs2WrNIzn1qgjUhZ8mSrtSBQnh8evM=
-github.com/easylab-platform/artifact/targets v0.1.2/go.mod h1:9u0bZ+ReqyeB9J72pDOu7qWVeiiDxECDGYQZ4zAJ2k0=
+github.com/easylab-platform/artifact/targets v0.1.3 h1:TAZyaYzh4cnBqUtzobnZnYnQsVeMXOJYZY9xs+Wnmcc=
+github.com/easylab-platform/artifact/targets v0.1.3/go.mod h1:9u0bZ+ReqyeB9J72pDOu7qWVeiiDxECDGYQZ4zAJ2k0=
 golang.org/x/net v0.58.0 h1:ynWG7rqYi4ccpTEuPZ2QGWHktVEM9DMCj9yzDE0Q7To=
 golang.org/x/net v0.58.0/go.mod h1:YwCddHnFlT7eLQqVprV19OnhLGtc5xOKgE0RyqgfWAU=
 golang.org/x/sys v0.47.0 h1:o7XGOvZQCADBQQ4Y7VNq2dRWQR7JmOUW8Kxx4ZsNgWs=
